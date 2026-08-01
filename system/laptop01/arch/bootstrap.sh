@@ -263,6 +263,14 @@ EOF
 }
 
 # --------------------------------------------------
+# Install System Configurations
+# --------------------------------------------------
+configure_system() {
+    echo "⚙ Configuring system..."
+    "$REPO_ROOT/scripts/install-wireguard-sudoers.sh"
+}
+
+# --------------------------------------------------
 # Install and enable package export service/timer
 # --------------------------------------------------
 setup_package_export() {
@@ -643,6 +651,7 @@ main() {
   install_starship
   install_nerd_font
   set_user_environment_defaults
+  configure_system
   setup_package_export
   setup_system_update
   setup_git_monitoring

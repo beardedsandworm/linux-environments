@@ -631,6 +631,14 @@ EOF
 }
 
 # --------------------------------------------------
+# Install System Configurations
+# --------------------------------------------------
+configure_system() {
+    echo "⚙ Configuring system..."
+    "$REPO_ROOT/scripts/install-wireguard-sudoers.sh"
+}
+
+# --------------------------------------------------
 # Install and enable package export service/timer
 # --------------------------------------------------
 setup_package_export() {
@@ -996,6 +1004,7 @@ main() {
   apply_gnome_environment
   set_gdm_xorg_default_session
   setup_touchscreen_disable
+  configure_system
   setup_package_export
   setup_system_update
   setup_git_monitoring

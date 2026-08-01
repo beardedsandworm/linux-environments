@@ -1,7 +1,10 @@
 7zip
 age
 alacritty
+android-sdk-cmdline-tools-latest
+android-tools
 archlinux-xdg-menu
+bambu-studio
 baobab
 base
 base-devel
@@ -25,6 +28,13 @@ dolphin
 efibootmgr
 epiphany
 fastfetch
+fcitx5
+fcitx5-chinese-addons
+fcitx5-configtool
+fcitx5-gtk
+fcitx5-hangul
+fcitx5-mozc
+fcitx5-qt
 firefox
 freecad
 fuse2
@@ -62,6 +72,7 @@ gnome-tweaks
 gnome-user-docs
 gnome-user-share
 gnome-weather
+gradle
 grilo-plugins
 gst-plugin-pipewire
 gst-thumbnailers
@@ -85,6 +96,11 @@ hyprshot
 inkscape
 intel-ucode
 iwd
+jadx
+jdk17-openjdk
+kicad
+kicad-library
+kicad-library-3d
 kitty
 kubectl-bin
 less
@@ -102,11 +118,13 @@ man-db
 nano
 nautilus
 neovim
+noto-fonts-cjk
 nss-mdns
 nvidia-open-dkms
 openresolv
 openssh
 orca
+orca-slicer
 papers
 pavucontrol
 pipewire
@@ -122,6 +140,7 @@ sl
 smartmontools
 snapshot
 sof-firmware
+spotify-launcher
 starship
 steam
 stellarium
@@ -152,6 +171,5 @@ xdg-utils
 xorg-server
 xorg-xinit
 yay
-yay-debug
 yelp
 zram-generator

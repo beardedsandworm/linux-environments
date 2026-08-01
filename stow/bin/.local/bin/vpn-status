@@ -1,0 +1,25 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+SERVICE="wg-quick@wormlogic.service"
+INTERFACE="wormlogic"
+LAB_HOST="10.42.42.4"
+
+echo "Service:"
+systemctl is-active "$SERVICE" || true
+
+echo
+echo "Default route:"
+ip route show default
+
+echo
+echo "Route to Arrakis:"
+ip route get "$LAB_HOST"
+
+echo
+echo "WireGuard:"
+if ip link show "$INTERFACE" &>/dev/null; then
+    sudo wg show "$INTERFACE"
+else
+    echo "Interface $INTERFACE is not present."
+fi

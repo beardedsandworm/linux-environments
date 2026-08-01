@@ -1,0 +1,10 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+SERVICE="wg-quick@wormlogic.service"
+
+if systemctl is-active --quiet "$SERVICE"; then
+    exec vpn-down
+else
+    exec vpn-up
+fi

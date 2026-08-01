@@ -1,0 +1,13 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+SERVICE="wg-quick@wormlogic.service"
+
+if systemctl is-active --quiet "$SERVICE"; then
+    echo "WireGuard is already active."
+else
+    sudo systemctl start "$SERVICE"
+    echo "WireGuard started."
+fi
+
+systemctl --no-pager --full status "$SERVICE" | sed -n '1,8p'

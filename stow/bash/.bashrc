@@ -2,6 +2,11 @@
 # ~/.bashrc
 #
 
+export ANDROID_HOME=/opt/android-sdk
+export ANDROID_SDK_ROOT=/opt/android-sdk
+export PATH=$PATH:$ANDROID_HOME/cmdline-tools/latest/bin
+export PATH=$PATH:$ANDROID_HOME/platform-tools
+
 # If not running interactively, don't do anything
 [[ $- != *i* ]] && return
 
