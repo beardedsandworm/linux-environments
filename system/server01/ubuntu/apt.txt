@@ -6,6 +6,8 @@ avahi-daemon
 base-files
 bash
 bcache-tools
+bluez
+bluez-tools
 bsdutils
 btrfs-progs
 ca-certificates
@@ -56,6 +58,7 @@ sudo
 systemd
 systemd-resolved
 systemd-sysv
+tree
 ubuntu-drivers-common
 ubuntu-keyring
 ubuntu-minimal
