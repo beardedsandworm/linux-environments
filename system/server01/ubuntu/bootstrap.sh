@@ -171,6 +171,45 @@ ensure_brew() {
   echo "✓ Homebrew installed"
 }
 
+
+# --------------------------------------------------
+# Configure Docker's official APT repository
+# - required for docker-ce, containerd.io, Buildx, and Compose plugin
+# - idempotent and safe to rerun
+# --------------------------------------------------
+setup_docker_repo() {
+  local codename arch
+
+  echo "🐳 Configuring Docker APT repository..."
+
+  # shellcheck disable=SC1091
+  source /etc/os-release
+  codename="${UBUNTU_CODENAME:-${VERSION_CODENAME:-}}"
+  arch="$(dpkg --print-architecture)"
+
+  if [[ -z "$codename" ]]; then
+    echo "✗ Could not determine Ubuntu codename from /etc/os-release"
+    exit 1
+  fi
+
+  sudo install -m 0755 -d /etc/apt/keyrings
+  sudo curl -fsSL https://download.docker.com/linux/ubuntu/gpg \
+    -o /etc/apt/keyrings/docker.asc
+  sudo chmod a+r /etc/apt/keyrings/docker.asc
+
+  sudo tee /etc/apt/sources.list.d/docker.sources >/dev/null <<EOF
+Types: deb
+URIs: https://download.docker.com/linux/ubuntu
+Suites: $codename
+Components: stable
+Architectures: $arch
+Signed-By: /etc/apt/keyrings/docker.asc
+EOF
+
+  sudo apt update
+  echo "✓ Docker APT repository configured"
+}
+
 # --------------------------------------------------
 # Install packages from machine-specific lists
 # - apt.txt
@@ -806,6 +845,7 @@ main() {
   prepare_ubuntu_repos
   ensure_nala
   initial_update
+  setup_docker_repo
   install_packages
   setup_age_and_sops
   ensure_ssh_key
