@@ -32,6 +32,8 @@ machine_label() {
   laptop02) echo "HP Envy" ;;
   desktop01) echo "Covid PC" ;;
   server01) echo "Docker Server" ;;
+  server02) echo "Dell Tower" ;;
+  server03) echo "Terramaster" ;;
   vps01) echo "Wormlogic VPS" ;;
   *) echo "Unknown Machine" ;;
   esac
@@ -53,6 +55,8 @@ prompt_machine() {
       echo " 3) Covid PC"
       echo " 4) Docker Server"
       echo " 5) Wormlogic VPS"
+      echo " 6) Dell Tower"
+      echo " 7) Terramaster"
       echo " 0) Exit"
     } >&2
 
@@ -80,6 +84,14 @@ prompt_machine() {
       echo "vps01"
       return 0
       ;;
+    6)
+      echo "server02"
+      return 0
+      ;;
+    7)
+      echo "server03"
+      return 0
+      ;;
     0)
       echo "exit"
       return 0
@@ -87,7 +99,7 @@ prompt_machine() {
     *)
       {
         echo "✗ Invalid selection: $choice"
-        echo " Please choose 0, 1, 2, 3, 4, or 5."
+        echo " Please choose 0-7"
         echo
       } >&2
       ;;
