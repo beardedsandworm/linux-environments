@@ -7,9 +7,9 @@ set -euo pipefail
 # --------------------------------------------------
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
 MACHINE_ID_FILE="${XDG_CONFIG_HOME:-$HOME/.config}/dotfiles/machine-id"
-EXPECTED_MACHINE="${1:-server01}"
+EXPECTED_MACHINE="${1:-server02}"
 EXPECTED_OS="ubuntu"
-MACHINE_LABEL="Docker Server"
+MACHINE_LABEL="Dell Tower"
 
 # --------------------------------------------------
 # Verify machine identity
@@ -339,7 +339,7 @@ setup_age_and_sops() {
 }
 
 # --------------------------------------------------
-# Ensure SSH key exists for remote unlock
+# Ensure host SSH key exists
 # - generates ed25519 key if missing
 # - non-interactive
 # - safe (does not overwrite existing keys)
@@ -364,7 +364,7 @@ ensure_ssh_key() {
   ssh-keygen -t ed25519 \
     -f "$key_file" \
     -N "" \
-    -C "server01-$(hostname)"
+    -C "server02-$(hostname)"
 
   chmod 600 "$key_file"
   chmod 644 "$pub_file"
@@ -456,42 +456,6 @@ setup_git_monitoring() {
   systemctl --user enable --now dotfiles-change-check.timer
 
   echo "✓ Git monitoring timers enabled"
-}
-
-# --------------------------------------------------
-# Setup remote unlock via SSH (dropbear in initramfs)
-# - allows remote LUKS unlock over SSH during boot
-# --------------------------------------------------
-setup_remote_unlock() {
-  echo " Setting up remote unlock (dropbear-initramfs)..."
-
-  sudo nala install -y dropbear-initramfs
-  sudo mkdir -p /etc/dropbear/initramfs
-
-  if [[ ! -f "$HOME/.ssh/id_ed25519.pub" ]]; then
-    echo "✗ SSH public key missing after generation step"
-    echo " Remote unlock cannot be configured"
-    exit 1
-  fi
-
-  if ! grep -q "^ssh-ed25519 " "$HOME/.ssh/id_ed25519.pub"; then
-    echo "✗ Invalid SSH public key format in $HOME/.ssh/id_ed25519.pub"
-    exit 1
-  fi
-
-  echo "✓ Found SSH key, installing into initramfs"
-  sudo cp "$HOME/.ssh/id_ed25519.pub" /etc/dropbear/initramfs/authorized_keys
-  sudo chmod 600 /etc/dropbear/initramfs/authorized_keys
-  sudo chown root:root /etc/dropbear/initramfs/authorized_keys
-
-  sudo sed -i 's/^#\?IP=.*/IP=dhcp/' /etc/initramfs-tools/initramfs.conf
-
-  sudo tee /etc/dropbear/initramfs/dropbear.conf >/dev/null <<'EOF'
-DROPBEAR_OPTIONS="-p 2222 -s -j -k -I 60"
-EOF
-
-  sudo update-initramfs -u
-  echo "✓ Remote unlock configured"
 }
 
 # --------------------------------------------------
@@ -609,10 +573,10 @@ setup_wormlogic_vpn() {
     read -r -p "VPS public key: " WORMLOGIC_VPS_PUBLIC_KEY
   fi
 
-  local default_vpn_ip="10.8.0.2/32"
+  local default_vpn_ip="10.8.0.3/32"
   if [[ -z "${WORMLOGIC_VPN_IP:-}" ]]; then
     echo
-    read -r -p "server01 VPN IP [$default_vpn_ip]: " input_vpn_ip
+    read -r -p "server02 VPN IP [$default_vpn_ip]: " input_vpn_ip
     WORMLOGIC_VPN_IP="${input_vpn_ip:-$default_vpn_ip}"
   fi
 
@@ -774,10 +738,10 @@ show_summary() {
     echo
     echo "Add this peer to /etc/wireguard/wg0.conf:"
     echo
-    echo "  # ${WORMLOGIC_VPN_MACHINE_ID:-server01}"
+    echo "  # ${WORMLOGIC_VPN_MACHINE_ID:-server02}"
     echo "  [Peer]"
     echo "  PublicKey = $WORMLOGIC_VPN_PUBLIC_KEY"
-    echo "  AllowedIPs = ${WORMLOGIC_VPN_IP:-REPLACE_WITH_SERVER01_VPN_IP}"
+    echo "  AllowedIPs = ${WORMLOGIC_VPN_IP:-REPLACE_WITH_SERVER02_VPN_IP}"
     echo
     echo "Then restart WireGuard on the VPS:"
     echo "  sudo systemctl restart wg-quick@wg0"
@@ -811,7 +775,6 @@ main() {
   ensure_ssh_key
   install_starship
   set_user_environment_defaults
-  setup_remote_unlock
   setup_wormlogic_vpn
   setup_package_export
   setup_system_update
@@ -831,7 +794,6 @@ main() {
   echo "   - dotfiles-change-check → local dotfiles drift awareness (daily)"
   echo "   - disk-space-check      → local disk usage warning (daily)"
   echo "   - heartbeat             → device online signal (daily)"
-  echo "   - remote-unlock         → SSH unlock via initramfs (port 2222)"
   echo
 
   prompt_reboot
