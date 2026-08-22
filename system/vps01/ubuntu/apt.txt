@@ -125,6 +125,7 @@ procps
 psmisc
 python3
 qemu-guest-agent
+qrencode
 rsync
 rsyslog
 screen
@@ -167,6 +168,8 @@ vim
 vim-tiny
 wget
 whiptail
+wireguard
+wireguard-tools
 wpasupplicant
 xfsprogs
 xz-utils
