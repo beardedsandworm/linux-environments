@@ -100,7 +100,7 @@ Choose an independent high-entropy recovery passphrase and store it outside
 this repository (for example, in your password manager).
 EOF_NOTICE
 
-age --passphrase --output "$TMP_FILE" "$AGE_KEY_FILE"
+age --armor --passphrase --output "$TMP_FILE" "$AGE_KEY_FILE"
 chmod 600 "$TMP_FILE"
 
 # Verify the ciphertext can be opened before replacing an existing recovery
