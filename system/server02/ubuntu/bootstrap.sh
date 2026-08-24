@@ -50,23 +50,19 @@ verify_os() {
 # - universe
 # - multiverse
 # - i386 support
-# - initial apt update/upgrade before switching to nala
+# - package upgrade is performed once later via nala
 # --------------------------------------------------
 prepare_ubuntu_repos() {
   echo "📦 Preparing Ubuntu repositories and architecture..."
 
-  sudo apt update
-  sudo apt install -y software-properties-common curl ca-certificates gnupg
+  sudo apt-get update
+  sudo apt-get install -y software-properties-common curl ca-certificates gnupg
 
   sudo add-apt-repository -y universe
   sudo add-apt-repository -y multiverse
   sudo dpkg --add-architecture i386 || true
 
-  echo "🔄 Performing initial apt update/upgrade before switching to nala..."
-  sudo apt update
-  sudo apt upgrade -y
-
-  echo "✓ Ubuntu repo preparation complete"
+  echo "✓ Ubuntu repository preparation complete"
 }
 
 # --------------------------------------------------
@@ -206,7 +202,6 @@ Architectures: $arch
 Signed-By: /etc/apt/keyrings/docker.asc
 EOF
 
-  sudo apt update
   echo "✓ Docker APT repository configured"
 }
 
@@ -217,164 +212,207 @@ EOF
 # - flatpak.txt
 # - brew.txt
 # --------------------------------------------------
+read_package_file() {
+  local file="$1"
+  grep -vE '^[[:space:]]*(#|$)' "$file" || true
+}
+
 install_packages() {
   local package_dir="$REPO_ROOT/system/$EXPECTED_MACHINE/$EXPECTED_OS"
   local apt_file="$package_dir/apt.txt"
   local snap_file="$package_dir/snap.txt"
   local flatpak_file="$package_dir/flatpak.txt"
   local brew_file="$package_dir/brew.txt"
+  local -a packages=()
+  local pkg
 
-  # ----------------------------
-  # APT / Nala packages
-  # ----------------------------
   if [[ -f "$apt_file" ]]; then
-    echo "📦 Installing packages from $apt_file..."
-    mapfile -t apt_packages <"$apt_file"
-    if ((${#apt_packages[@]} > 0)); then
-      sudo nala install -y "${apt_packages[@]}"
+    mapfile -t packages < <(read_package_file "$apt_file")
+    if ((${#packages[@]} > 0)); then
+      echo "📦 Installing APT packages from $apt_file..."
+      sudo nala install -y "${packages[@]}"
     else
-      echo "⚠ apt.txt exists but is empty, skipping"
+      echo "⚠ apt.txt contains no packages, skipping"
     fi
   else
     echo "⚠ No apt.txt found at $apt_file, skipping"
   fi
 
-  # ----------------------------
-  # Snap packages
-  # ----------------------------
+  packages=()
   if [[ -f "$snap_file" ]]; then
-    ensure_snap
-    wait_for_snap
-
-    echo "📦 Installing snap packages from $snap_file..."
-    mapfile -t snap_packages <"$snap_file"
-    if ((${#snap_packages[@]} > 0)); then
-      for pkg in "${snap_packages[@]}"; do
+    mapfile -t packages < <(read_package_file "$snap_file")
+    if ((${#packages[@]} > 0)); then
+      ensure_snap
+      wait_for_snap
+      echo "📦 Installing Snap packages from $snap_file..."
+      for pkg in "${packages[@]}"; do
         sudo snap install "$pkg"
       done
     else
-      echo "⚠ snap.txt exists but is empty, skipping"
+      echo "⚠ snap.txt contains no packages, skipping"
     fi
-  else
-    echo "⚠ No snap.txt found at $snap_file, skipping"
   fi
 
-  # ----------------------------
-  # Flatpak packages
-  # ----------------------------
+  packages=()
   if [[ -f "$flatpak_file" ]]; then
-    ensure_flatpak
-
-    echo "📦 Installing Flatpak packages from $flatpak_file..."
-    mapfile -t flatpak_packages <"$flatpak_file"
-    if ((${#flatpak_packages[@]} > 0)); then
-      for pkg in "${flatpak_packages[@]}"; do
+    mapfile -t packages < <(read_package_file "$flatpak_file")
+    if ((${#packages[@]} > 0)); then
+      ensure_flatpak
+      echo "📦 Installing Flatpak packages from $flatpak_file..."
+      for pkg in "${packages[@]}"; do
         flatpak install -y flathub "$pkg"
       done
     else
-      echo "⚠ flatpak.txt exists but is empty, skipping"
+      echo "⚠ flatpak.txt contains no packages, skipping"
     fi
-  else
-    echo "⚠ No flatpak.txt found at $flatpak_file, skipping"
   fi
 
-  # ----------------------------
-  # Homebrew packages
-  # ----------------------------
+  packages=()
   if [[ -f "$brew_file" ]]; then
-    ensure_brew
-
-    if [[ -x /home/linuxbrew/.linuxbrew/bin/brew ]]; then
-      eval "$(/home/linuxbrew/.linuxbrew/bin/brew shellenv)"
-    fi
-
-    echo "📦 Installing Homebrew packages from $brew_file..."
-    mapfile -t brew_packages <"$brew_file"
-    if ((${#brew_packages[@]} > 0)); then
+    mapfile -t packages < <(read_package_file "$brew_file")
+    if ((${#packages[@]} > 0)); then
+      ensure_brew
+      if [[ -x /home/linuxbrew/.linuxbrew/bin/brew ]]; then
+        eval "$(/home/linuxbrew/.linuxbrew/bin/brew shellenv)"
+      fi
+      echo "📦 Installing Homebrew packages from $brew_file..."
       brew update
-      brew upgrade
-      for pkg in "${brew_packages[@]}"; do
-        brew install "$pkg" || true
+      for pkg in "${packages[@]}"; do
+        if brew list --formula "$pkg" >/dev/null 2>&1; then
+          echo "✓ Homebrew package already installed: $pkg"
+        else
+          brew install "$pkg"
+        fi
       done
     else
-      echo "⚠ brew.txt exists but is empty, skipping"
+      echo "⚠ brew.txt contains no packages, skipping"
     fi
-  else
-    echo "⚠ No brew.txt found at $brew_file, skipping"
   fi
-
 }
 
 # --------------------------------------------------
-# Setup age + sops for encrypted secrets
-# - expects age to be installed via apt.txt
-# - installs latest sops .deb from GitHub releases
-# - creates the standard SOPS age key location
-# - generates a key only if one does not already exist
-# - locks permissions for private key material
-# - writes the public key to a predictable local file
-#---------------------------------------------------
-setup_age_and_sops() {
-  local age_base_dir="${XDG_CONFIG_HOME:-$HOME/.config}/sops"
-  local age_dir="$age_base_dir/age"
-  local key_file="$age_dir/keys.txt"
-  local dotfiles_dir="${XDG_CONFIG_HOME:-$HOME/.config}/dotfiles"
-  local public_key_file="$dotfiles_dir/age-public-key"
-  local public_key=""
-  local sops_version=""
+# Setup age + SOPS for encrypted secrets
+# - restores secrets/<machine-id>/age-key.age before generating a key
+# - refuses incompatible key rotation when encrypted host secrets already exist
+# - installs SOPS after the age identity is available
+# --------------------------------------------------
+ensure_sops() {
+  if command -v sops >/dev/null 2>&1; then
+    echo "✓ sops already installed"
+    return 0
+  fi
 
-  echo " Setting up age + sops..."
+  echo "🔐 Installing sops..."
 
-  if ! command -v age-keygen >/dev/null 2>&1; then
-    echo "✗ age-keygen not found. Make sure 'age' is present in system/$EXPECTED_MACHINE/$EXPECTED_OS/apt.txt"
+  local architecture sops_version tmp_deb
+  architecture="$(dpkg --print-architecture)"
+
+  case "$architecture" in
+    amd64|arm64) ;;
+    *)
+      echo "✗ Unsupported architecture for automatic sops install: $architecture"
+      exit 1
+      ;;
+  esac
+
+  sops_version="$(
+    curl -fsSL https://api.github.com/repos/getsops/sops/releases/latest |
+      awk -F '"' '/"tag_name"/ {print $4; exit}'
+  )"
+
+  if [[ -z "$sops_version" ]]; then
+    echo "✗ Failed to determine latest sops version"
     exit 1
   fi
 
-  if ! command -v sops >/dev/null 2>&1; then
-    echo " Installing sops..."
-    sops_version="$(curl -s https://api.github.com/repos/getsops/sops/releases/latest | grep tag_name | cut -d'"' -f4)"
+  tmp_deb="$(mktemp --suffix=.deb)"
+  curl -fsSL \
+    -o "$tmp_deb" \
+    "https://github.com/getsops/sops/releases/download/${sops_version}/sops_${sops_version#v}_${architecture}.deb"
 
-    if [[ -z "$sops_version" ]]; then
-      echo "✗ Failed to determine latest sops version"
+  sudo dpkg -i "$tmp_deb"
+  rm -f "$tmp_deb"
+
+  echo "✓ sops installed"
+}
+
+setup_age_identity() {
+  local age_base_dir="${XDG_CONFIG_HOME:-$HOME/.config}/sops"
+  local age_dir="$age_base_dir/age"
+  local key_file="${SOPS_AGE_KEY_FILE:-$age_dir/keys.txt}"
+  local key_dir
+  local dotfiles_dir="${XDG_CONFIG_HOME:-$HOME/.config}/dotfiles"
+  local public_key_file="$dotfiles_dir/age-public-key"
+  local machine_id host_secret_dir recovery_file restore_script public_key
+
+  echo "🔐 Restoring/creating SOPS age identity..."
+
+  if ! command -v age >/dev/null 2>&1 || ! command -v age-keygen >/dev/null 2>&1; then
+    echo "✗ age/age-keygen not found."
+    echo "  Make sure 'age' is present in system/$EXPECTED_MACHINE/$EXPECTED_OS/apt.txt"
+    exit 1
+  fi
+
+  machine_id="$(tr -d '\r\n' < "$MACHINE_ID_FILE")"
+  host_secret_dir="$REPO_ROOT/secrets/$machine_id"
+  recovery_file="$host_secret_dir/age-key.age"
+  restore_script="$REPO_ROOT/scripts/restore-age-key.sh"
+  key_dir="$(dirname "$key_file")"
+
+  mkdir -p "$key_dir" "$dotfiles_dir"
+  chmod 700 "$key_dir"
+  mkdir -p "$age_base_dir"
+  chmod 700 "$age_base_dir"
+
+  if [[ ! -f "$key_file" && -f "$recovery_file" ]]; then
+    if [[ ! -f "$restore_script" ]]; then
+      echo "✗ Age recovery exists but restore helper is missing:"
+      echo "  $restore_script"
       exit 1
     fi
 
-    curl -Lo sops.deb "https://github.com/getsops/sops/releases/download/${sops_version}/sops_${sops_version#v}_amd64.deb"
-    sudo dpkg -i sops.deb
-    rm -f sops.deb
-    echo "✓ sops installed"
-  else
-    echo "✓ sops already installed"
+    echo "🔐 Stored age recovery identity found for $machine_id"
+    bash "$restore_script"
   fi
 
-  mkdir -p "$age_dir"
-  chmod 700 "$age_base_dir"
-  chmod 700 "$age_dir"
-
   if [[ ! -f "$key_file" ]]; then
-    echo " No age key found. Generating..."
+    if [[ -d "$host_secret_dir" ]] && \
+       find "$host_secret_dir" -type f -name '*.enc' -print -quit | grep -q .; then
+      echo "✗ Encrypted secrets exist for $machine_id, but its age identity is missing."
+      echo "  Expected recovery copy: $recovery_file"
+      echo "  Refusing to generate an incompatible replacement identity."
+      exit 1
+    fi
+
     age-keygen -o "$key_file"
-    echo "✓ age key generated"
+    echo "✓ New age identity generated"
+    echo "  After bootstrap, run scripts/capture-age-key.sh to escrow it in Git."
   else
-    echo "✓ Existing age key found"
+    echo "✓ Existing/restored age identity found"
   fi
 
   chmod 600 "$key_file"
+  public_key="$(age-keygen -y "$key_file" 2>/dev/null || true)"
 
-  public_key="$(grep 'public key:' "$key_file" | awk '{print $4}')"
-
-  if [[ -z "$public_key" ]]; then
-    echo "✗ Failed to extract public key from $key_file"
+  if [[ ! "$public_key" =~ ^age1 ]]; then
+    echo "✗ Failed to derive public age recipient from $key_file"
     exit 1
   fi
 
-  mkdir -p "$dotfiles_dir"
-  printf '%s\n' "$public_key" >"$public_key_file"
-  chmod 600 "$public_key_file"
+  printf '%s\n' "$public_key" > "$public_key_file"
+  chmod 644 "$public_key_file"
 
+  AGE_PUBLIC_KEY="$public_key"
+  AGE_RECOVERY_FILE="$recovery_file"
+
+  echo "✓ age identity ready"
+  echo "  Public key: $public_key"
+}
+
+setup_age_and_sops() {
+  setup_age_identity
+  ensure_sops
   echo "✓ age + sops ready"
-  echo " Public key: $public_key"
-  echo " Private key: $key_file"
 }
 
 # --------------------------------------------------
@@ -388,58 +426,67 @@ ensure_ssh_key() {
   local key_file="$ssh_dir/id_ed25519"
   local pub_file="${key_file}.pub"
 
-  echo " Checking for SSH key..."
+  echo "🔑 Checking for SSH key..."
 
   mkdir -p "$ssh_dir"
   chmod 700 "$ssh_dir"
 
   if [[ -f "$pub_file" ]]; then
-    echo "✓ SSH key already exists"
+    echo "✓ SSH public key already exists"
     return 0
   fi
 
-  echo " No SSH key found. Generating..."
+  if [[ -f "$key_file" ]]; then
+    ssh-keygen -y -f "$key_file" > "$pub_file"
+    chmod 644 "$pub_file"
+    echo "✓ SSH public key regenerated from existing private key"
+    return 0
+  fi
 
+  echo "🔑 No SSH key found. Generating..."
   ssh-keygen -t ed25519 \
     -f "$key_file" \
     -N "" \
-    -C "server02-$(hostname)"
+    -C "$EXPECTED_MACHINE-$(hostname)"
 
   chmod 600 "$key_file"
   chmod 644 "$pub_file"
 
   echo "✓ SSH key generated"
-  echo " Public key:"
+  echo "  Public key:"
   cat "$pub_file"
 }
 
 # --------------------------------------------------
-# Set default user environment
-# - PATH
-# - editor
-# - no GUI defaults on server
+# Set server user environment
+# - manage PATH only
+# - leave editor/browser choices to OS/user defaults
 # --------------------------------------------------
 set_user_environment_defaults() {
-  echo "🌱 Setting user environment defaults..."
+  local env_dir="$HOME/.config/environment.d"
+  local legacy_defaults="$env_dir/defaults.conf"
 
-  mkdir -p "$HOME/.config/environment.d"
-  mkdir -p "$HOME/.local/bin"
+  echo "🌱 Setting server environment defaults..."
 
-  cat >"$HOME/.config/environment.d/path.conf" <<EOF
-PATH=$HOME/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/bin:/bin
+  mkdir -p "$env_dir" "$HOME/.local/bin"
+
+  cat > "$env_dir/path.conf" <<'EOF'
+PATH=$HOME/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 EOF
 
-  cat >"$HOME/.config/environment.d/defaults.conf" <<EOF
-EDITOR=nvim
-VISUAL=nvim
-EOF
+  # Older versions of this bootstrap forced nvim. Remove only the exact
+  # bootstrap-generated defaults file, leaving other user-managed settings.
+  if [[ -f "$legacy_defaults" ]] && \
+     [[ "$(grep -vE '^[[:space:]]*(#|$)' "$legacy_defaults" || true)" == $'EDITOR=nvim\nVISUAL=nvim' ]]; then
+    rm -f "$legacy_defaults"
+    echo "✓ Removed legacy forced nvim environment defaults"
+  fi
 
-  if command -v nvim >/dev/null 2>&1; then
-    git config --global core.editor "nvim"
-    git config --global sequence.editor "nvim"
-    echo "✓ Git editor set to nvim"
-  else
-    echo "⚠ nvim not found, skipping git editor config"
+  if [[ "$(git config --global --get core.editor 2>/dev/null || true)" == "nvim" ]]; then
+    git config --global --unset core.editor || true
+  fi
+  if [[ "$(git config --global --get sequence.editor 2>/dev/null || true)" == "nvim" ]]; then
+    git config --global --unset sequence.editor || true
   fi
 
   echo "✓ Environment defaults configured"
@@ -612,10 +659,10 @@ setup_wormlogic_vpn() {
     read -r -p "VPS public key: " WORMLOGIC_VPS_PUBLIC_KEY
   fi
 
-  local default_vpn_ip="10.8.0.3/32"
+  local default_vpn_ip="10.8.0.4/32"
   if [[ -z "${WORMLOGIC_VPN_IP:-}" ]]; then
     echo
-    read -r -p "server02 VPN IP [$default_vpn_ip]: " input_vpn_ip
+    read -r -p "$EXPECTED_MACHINE VPN IP [$default_vpn_ip]: " input_vpn_ip
     WORMLOGIC_VPN_IP="${input_vpn_ip:-$default_vpn_ip}"
   fi
 
@@ -673,6 +720,21 @@ setup_wormlogic_vpn() {
   echo "  VPN IP:        $peer_vpn_ip"
   echo "  Source config: $source_conf"
   echo "  System config: $target_conf"
+}
+
+# --------------------------------------------------
+# Apply optional machine-specific system configuration
+# --------------------------------------------------
+configure_host_system() {
+  local configure_script="$REPO_ROOT/system/$EXPECTED_MACHINE/$EXPECTED_OS/configure-system.sh"
+
+  if [[ ! -f "$configure_script" ]]; then
+    echo "⚠ No host-specific system configuration at $configure_script, skipping"
+    return 0
+  fi
+
+  echo "⚙ Applying host-specific system configuration..."
+  bash "$configure_script"
 }
 
 # --------------------------------------------------
@@ -734,8 +796,15 @@ apply_host_environment() {
 # Run initial package export
 # --------------------------------------------------
 run_package_export() {
+  local export_script="$REPO_ROOT/scripts/package-export.sh"
+
+  if [[ ! -f "$export_script" ]]; then
+    echo "⚠ package-export.sh not found at $export_script, skipping"
+    return 0
+  fi
+
   echo "📝 Exporting current package state..."
-  "$REPO_ROOT/scripts/package-export.sh"
+  bash "$export_script"
 }
 
 # --------------------------------------------------
@@ -767,6 +836,15 @@ show_summary() {
   echo "Local IP:"
   echo "  $local_ip"
   echo
+  echo "SOPS age identity:"
+  echo "  Public key: ${AGE_PUBLIC_KEY:-unavailable}"
+  if [[ -n "${AGE_RECOVERY_FILE:-}" && ! -f "${AGE_RECOVERY_FILE:-}" ]]; then
+    echo "  Recovery:   not captured yet"
+    echo "  Action:     ./scripts/capture-age-key.sh"
+  else
+    echo "  Recovery:   ${AGE_RECOVERY_FILE:-unavailable}"
+  fi
+  echo
   echo "WireGuard (Wormlogic peer):"
 
   if [[ -n "${WORMLOGIC_VPN_PUBLIC_KEY:-}" ]]; then
@@ -777,10 +855,10 @@ show_summary() {
     echo
     echo "Add this peer to /etc/wireguard/wg0.conf:"
     echo
-    echo "  # ${WORMLOGIC_VPN_MACHINE_ID:-server02}"
+    echo "  # ${WORMLOGIC_VPN_MACHINE_ID:-$EXPECTED_MACHINE}"
     echo "  [Peer]"
     echo "  PublicKey = $WORMLOGIC_VPN_PUBLIC_KEY"
-    echo "  AllowedIPs = ${WORMLOGIC_VPN_IP:-REPLACE_WITH_SERVER02_VPN_IP}"
+    echo "  AllowedIPs = ${WORMLOGIC_VPN_IP:-REPLACE_WITH_VPN_IP}"
     echo
     echo "Then restart WireGuard on the VPS:"
     echo "  sudo systemctl restart wg-quick@wg0"
@@ -808,14 +886,15 @@ main() {
   verify_os
   prepare_ubuntu_repos
   ensure_nala
-  initial_update
   setup_docker_repo
+  initial_update
   install_packages
   setup_age_and_sops
   ensure_ssh_key
   install_starship
   set_user_environment_defaults
   setup_wormlogic_vpn
+  configure_host_system
   setup_package_export
   setup_system_update
   setup_git_monitoring
