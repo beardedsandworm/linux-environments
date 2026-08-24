@@ -1,3 +1,9 @@
 secrets/*
+!secrets/**/
 !secrets/.env.example
+
+# Encrypted secrets are safe to version
+!secrets/**/*.enc
+!secrets/**/*.age
+
 local/*
