@@ -628,7 +628,7 @@ install_starship() {
 setup_wormlogic_vpn() {
   local vpn_name="wormlogic"
   local vps_host="vpn.wormlogic.com"
-  local vpn_allowed_ips="10.8.0.0/24"
+  local vpn_allowed_ips="10.8.0.1/32"
   local machine_id_file="${XDG_CONFIG_HOME:-$HOME/.config}/dotfiles/machine-id"
 
   local machine_id
