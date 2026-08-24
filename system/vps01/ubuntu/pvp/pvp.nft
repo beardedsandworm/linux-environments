@@ -1,0 +1,51 @@
+# `destroy` makes reloads idempotent. nft applies a file as one transaction, so
+# the PVP kill-switch is replaced atomically without intentionally opening an
+# unfiltered wg-pvp -> eth0 window.
+destroy table inet wormlogic_pvp_filter
+destroy table ip wormlogic_pvp_nat
+
+table inet wormlogic_pvp_filter {
+    chain input {
+        type filter hook input priority -50; policy accept;
+
+        iifname "wg-pvp" ct state { established, related } accept
+        iifname "wg-pvp" ip protocol icmp accept
+        iifname "wg-pvp" tcp dport 22 accept
+
+        # Pi-hole's published 10.9.0.1 ports are DNATed by Docker before the
+        # input decision and therefore traverse forward instead.
+        iifname "wg-pvp" counter drop
+    }
+
+    chain forward {
+        type filter hook forward priority -50; policy accept;
+
+        ct state invalid drop
+
+        # Return traffic to PVP clients.
+        oifname "wg-pvp" ct state { established, related } accept
+
+        # PVP Internet egress is Proton only.
+        iifname "wg-pvp" oifname "wg-proton" accept
+
+        # Approved Wormlogic private networks via wg0.
+        iifname "wg-pvp" oifname "wg0" ip daddr { 10.8.0.0/24, 10.42.42.0/24 } accept
+
+        # Pi-hole after Docker DNAT from 10.9.0.1:53 and 10.9.0.1:8081.
+        iifname "wg-pvp" oifname "br-pihole" ip daddr 172.21.0.2 udp dport 53 accept
+        iifname "wg-pvp" oifname "br-pihole" ip daddr 172.21.0.2 tcp dport { 53, 80 } accept
+
+        # Fail closed. wg-pvp is never permitted to escape directly via eth0.
+        iifname "wg-pvp" counter drop
+    }
+}
+
+table ip wormlogic_pvp_nat {
+    chain postrouting {
+        type nat hook postrouting priority 110; policy accept;
+
+        # NAT only PVP Internet traffic onto Proton. PVP -> Wormlogic/private
+        # traffic is intentionally not NATed so source addresses can survive.
+        ip saddr 10.9.0.0/24 oifname "wg-proton" masquerade
+    }
+}

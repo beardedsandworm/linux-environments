@@ -1,0 +1,20 @@
+[Unit]
+Description=Wormlogic PVP policy routing and fail-closed firewall
+After=network-online.target docker.service wg-quick@wg0.service wg-quick@wg-pvp.service wg-quick@wg-proton.service
+Wants=network-online.target docker.service
+Requires=wg-quick@wg0.service wg-quick@wg-pvp.service wg-quick@wg-proton.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+
+# Firewall first, then routing. On stop, policy routes are removed while the
+# firewall remains resident so an inactive PVP service cannot fall back to eth0.
+ExecStart=/usr/sbin/nft -f /etc/nftables.d/wormlogic-pvp.nft
+ExecStart=/usr/local/lib/wormlogic/pvp-routing.sh apply
+ExecStop=/usr/local/lib/wormlogic/pvp-routing.sh remove
+ExecReload=/usr/sbin/nft -f /etc/nftables.d/wormlogic-pvp.nft
+ExecReload=/usr/local/lib/wormlogic/pvp-routing.sh apply
+
+[Install]
+WantedBy=multi-user.target

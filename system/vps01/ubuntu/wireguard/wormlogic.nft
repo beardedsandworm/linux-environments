@@ -1,0 +1,13 @@
+# Wormlogic-owned forwarding rule. This intentionally lives in a separate nft
+# table and does not modify Docker's iptables-nft managed tables.
+destroy table inet wormlogic_wg_filter
+
+table inet wormlogic_wg_filter {
+    chain forward {
+        type filter hook forward priority -60; policy accept;
+
+        # Permit traffic to traverse Heighliner between WireGuard peers, e.g.
+        # laptop01 -> Heighliner -> Midway -> 10.42.42.0/24.
+        iifname "wg0" oifname "wg0" accept
+    }
+}

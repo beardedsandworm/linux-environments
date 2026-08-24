@@ -159,6 +159,7 @@ tecla
 thunderbird
 timeshift
 tmux
+torbrowser-launcher
 traceroute
 tree
 ttf-genzengothic-kai
