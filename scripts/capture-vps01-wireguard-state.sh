@@ -2,6 +2,8 @@
 set -euo pipefail
 umask 077
 
+SCRIPT_VERSION="2026-08-24.5"
+
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 MACHINE_ID_FILE="${XDG_CONFIG_HOME:-$HOME/.config}/dotfiles/machine-id"
 AGE_KEY_FILE="${SOPS_AGE_KEY_FILE:-${XDG_CONFIG_HOME:-$HOME/.config}/sops/age/keys.txt}"
@@ -28,7 +30,7 @@ trap cleanup EXIT
 
 usage() {
   cat <<'USAGE'
-Usage: capture-vps01-wireguard-state.sh [--force]
+Usage: capture-vps01-wireguard-state-v5.sh [--force]
 
 Captures the existing Heighliner identities needed for disaster recovery:
   secrets/vps01/wg0.key.enc
@@ -40,6 +42,10 @@ It also records safe public/declarative state:
   system/vps01/ubuntu/pvp/heighliner.pub
   system/vps01/ubuntu/pvp/proton-client.pub
   system/vps01/ubuntu/pvp/peers/current.conf
+
+Version 5 deliberately does NOT use `wg pubkey` while capturing identities.
+It reads each running interface identity directly and compares the running
+private key with PrivateKey= in the persistent configuration without printing it.
 
 Dynamic Endpoint= lines are omitted from wg-pvp peer definitions.
 The script refuses to export wg-pvp peers if a PresharedKey= is present.
@@ -58,6 +64,8 @@ while (($# > 0)); do
   esac
   shift
 done
+
+echo "capture-vps01-wireguard-state-v5.sh $SCRIPT_VERSION"
 
 if [[ $EUID -eq 0 ]]; then
   echo "✗ Run this script as the normal user, not root."
@@ -99,11 +107,11 @@ else
 fi
 
 [[ "$AGE_RECIPIENT" =~ ^age1 ]] || {
-  echo "✗ Invalid SOPS age recipient: $AGE_RECIPIENT"
+  echo "✗ Invalid SOPS age recipient"
   exit 1
 }
 
-mkdir -p "$SECRET_DIR" "$PVP_DIR/peers"
+mkdir -p "$SECRET_DIR" "$PVP_DIR/peers" "$WG0_DIR"
 chmod 700 "$SECRET_DIR"
 
 SECRET_OUTPUTS=(
@@ -129,33 +137,83 @@ if sudo grep -Eq '^[[:space:]]*PresharedKey[[:space:]]*=' "$WG_PVP_CONF"; then
   exit 1
 fi
 
-extract_private_key() {
+extract_config_private_key() {
   local config="$1"
-  sudo awk -F '[[:space:]]*=[[:space:]]*' \
-    '/^[[:space:]]*PrivateKey[[:space:]]*=/ {print $2; exit}' "$config"
+
+  sudo awk '
+    /^[[:space:]]*PrivateKey[[:space:]]*=/ {
+      line = $0
+      sub(/^[[:space:]]*PrivateKey[[:space:]]*=[[:space:]]*/, "", line)
+      sub(/[[:space:]]*#.*/, "", line)
+      gsub(/^[[:space:]]+|[[:space:]]+$/, "", line)
+      print line
+      exit
+    }
+  ' "$config"
 }
 
-# Resolve and verify all three persistent identities before writing anything to
-# the repository. This catches persistent/runtime drift rather than capturing an
-# ambiguous recovery state.
-WG0_PUBLIC="$(extract_private_key "$WG0_CONF" | wg pubkey)"
-PVP_PUBLIC="$(extract_private_key "$WG_PVP_CONF" | wg pubkey)"
-PROTON_PUBLIC="$(extract_private_key "$WG_PROTON_CONF" | wg pubkey)"
+read_running_private_key() {
+  local interface="$1"
+  local key
 
-RUNNING_WG0_PUBLIC="$(sudo wg show wg0 public-key)"
-RUNNING_PVP_PUBLIC="$(sudo wg show wg-pvp public-key)"
-RUNNING_PROTON_PUBLIC="$(sudo wg show wg-proton public-key)"
+  if ! key="$(sudo wg show "$interface" private-key 2>/dev/null)"; then
+    echo "✗ Running WireGuard interface '$interface' was not found" >&2
+    return 1
+  fi
 
-if [[ "$WG0_PUBLIC" != "$RUNNING_WG0_PUBLIC" || \
-      "$PVP_PUBLIC" != "$RUNNING_PVP_PUBLIC" || \
-      "$PROTON_PUBLIC" != "$RUNNING_PROTON_PUBLIC" ]]; then
-  echo "✗ Persistent WireGuard identity does not match a running interface"
-  echo "  Refusing to capture ambiguous recovery state."
-  exit 1
-fi
+  key="${key//$'\r'/}"
+  key="${key//$'\n'/}"
 
-# The known wg0 public identity is already committed in this proposal. Treat a
-# mismatch as a serious error rather than silently replacing it.
+  if [[ -z "$key" || "$key" == "(none)" ]]; then
+    echo "✗ Running WireGuard interface '$interface' has no private key" >&2
+    return 1
+  fi
+
+  printf '%s\n' "$key"
+}
+
+verify_identity() {
+  local name="$1"
+  local interface="$2"
+  local config="$3"
+  local configured_private running_private running_public
+
+  echo "  • Checking $name ..." >&2
+
+  configured_private="$(extract_config_private_key "$config")"
+  if [[ -z "$configured_private" ]]; then
+    echo "✗ $name: no PrivateKey= found in $config" >&2
+    return 1
+  fi
+
+  running_private="$(read_running_private_key "$interface")" || return 1
+
+  if [[ "$configured_private" != "$running_private" ]]; then
+    echo "✗ $name: PrivateKey in $config does not match running '$interface'" >&2
+    echo "  Refusing to capture ambiguous recovery state." >&2
+    return 1
+  fi
+
+  if ! running_public="$(sudo wg show "$interface" public-key 2>/dev/null)"; then
+    echo "✗ $name: could not read public key from running '$interface'" >&2
+    return 1
+  fi
+
+  if [[ -z "$running_public" || "$running_public" == "(none)" ]]; then
+    echo "✗ $name: running '$interface' has no public key" >&2
+    return 1
+  fi
+
+  echo "  ✓ $name persistent and running identities match" >&2
+  printf '%s\n' "$running_public"
+}
+
+echo "🔐 Verifying persistent WireGuard identities without wg pubkey..."
+WG0_PUBLIC="$(verify_identity "Wormlogic wg0" "wg0" "$WG0_CONF")"
+PVP_PUBLIC="$(verify_identity "PVP wg-pvp" "wg-pvp" "$WG_PVP_CONF")"
+PROTON_PUBLIC="$(verify_identity "Proton wg-proton" "wg-proton" "$WG_PROTON_CONF")"
+echo "✓ All persistent WireGuard identities verified"
+
 if [[ -f "$WG0_DIR/heighliner.pub" ]]; then
   EXPECTED_WG0_PUBLIC="$(tr -d '\r\n' < "$WG0_DIR/heighliner.pub")"
   if [[ "$EXPECTED_WG0_PUBLIC" != "$WG0_PUBLIC" ]]; then
@@ -190,8 +248,13 @@ capture_encrypted_stream() {
   chmod 600 "$output"
 }
 
-capture_encrypted_stream "$SECRET_DIR/wg0.key.enc" extract_private_key "$WG0_CONF"
-capture_encrypted_stream "$SECRET_DIR/wg-pvp.key.enc" extract_private_key "$WG_PVP_CONF"
+capture_running_private_key() {
+  local interface="$1"
+  read_running_private_key "$interface"
+}
+
+capture_encrypted_stream "$SECRET_DIR/wg0.key.enc" capture_running_private_key "wg0"
+capture_encrypted_stream "$SECRET_DIR/wg-pvp.key.enc" capture_running_private_key "wg-pvp"
 capture_encrypted_stream "$SECRET_DIR/wg-proton.conf.enc" sudo cat "$WG_PROTON_CONF"
 
 printf '%s\n' "$WG0_PUBLIC" > "$WG0_DIR/heighliner.pub"
