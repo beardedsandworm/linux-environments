@@ -206,6 +206,31 @@ EOF
 }
 
 # --------------------------------------------------
+# Configure NVIDIA Container Toolkit APT repository
+# - NVIDIA GPU drivers remain sourced from Ubuntu's repositories/apt.txt
+# - this repository provides nvidia-container-toolkit for Docker GPU access
+# - package metadata is refreshed later by initial_update()
+# --------------------------------------------------
+setup_nvidia_container_repo() {
+  local keyring="/usr/share/keyrings/nvidia-container-toolkit-keyring.gpg"
+  local list_file="/etc/apt/sources.list.d/nvidia-container-toolkit.list"
+
+  echo "🎮 Configuring NVIDIA Container Toolkit APT repository..."
+
+  sudo install -m 0755 -d /usr/share/keyrings /etc/apt/sources.list.d
+
+  curl -fsSL https://nvidia.github.io/libnvidia-container/gpgkey | \
+    sudo gpg --dearmor --yes -o "$keyring"
+  sudo chmod 0644 "$keyring"
+
+  curl -fsSL https://nvidia.github.io/libnvidia-container/stable/deb/nvidia-container-toolkit.list | \
+    sed "s#deb https://#deb [signed-by=$keyring] https://#g" | \
+    sudo tee "$list_file" >/dev/null
+
+  echo "✓ NVIDIA Container Toolkit APT repository configured"
+}
+
+# --------------------------------------------------
 # Install packages from machine-specific lists
 # - apt.txt
 # - snap.txt
@@ -887,6 +912,7 @@ main() {
   prepare_ubuntu_repos
   ensure_nala
   setup_docker_repo
+  setup_nvidia_container_repo
   initial_update
   install_packages
   setup_age_and_sops
