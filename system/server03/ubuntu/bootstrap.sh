@@ -1084,7 +1084,7 @@ configure_host_system() {
 # --------------------------------------------------
 prepare_shell_dotfiles() {
   local backup_dir="$HOME/.dotfile-backups/$(date +%Y%m%d-%H%M%S)"
-  local files=("$HOME/.bashrc" "$HOME/.bash_profile" "$HOME/.bash_logout")
+  local files=("$HOME/.bashrc" "$HOME/.bash_profile" "$HOME/.bash_logout" "$HOME/.ssh/config" "$HOME/.ssh/authorized_keys")
 
   echo "🐚 Preparing shell dotfiles for stow..."
 

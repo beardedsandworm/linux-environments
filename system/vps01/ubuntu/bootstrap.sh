@@ -8,6 +8,11 @@ EXPECTED_MACHINE="${1:-vps01}"
 EXPECTED_OS="ubuntu"
 MACHINE_LABEL="Heighliner VPS"
 
+# --------------------------------------------------
+# Bootstrap safety and identity validation
+# - run as the normal user; sudo is used only where required
+# - verify the declared machine ID and Ubuntu platform before changes
+# --------------------------------------------------
 if [[ $EUID -eq 0 ]]; then
   echo "✗ Run this bootstrap as the normal user, not as root."
   echo "  The script uses sudo where root access is required."
@@ -50,6 +55,12 @@ verify_os() {
   echo "✓ Operating system verified: $EXPECTED_OS"
 }
 
+# --------------------------------------------------
+# Prepare Ubuntu repositories and package tooling
+# - enable standard Ubuntu supplemental repositories
+# - ensure nala is available
+# - configure Docker's upstream apt repository
+# --------------------------------------------------
 prepare_ubuntu_repos() {
   echo "📦 Preparing Ubuntu repositories..."
 
@@ -101,6 +112,10 @@ install_docker_repo() {
   echo "✓ Docker apt repository configured"
 }
 
+# --------------------------------------------------
+# Update the base system and install declared host packages
+# - apt.txt is the authoritative Ubuntu package list for this host
+# --------------------------------------------------
 initial_update() {
   echo "📦 Updating system..."
   sudo nala update
@@ -128,6 +143,11 @@ install_packages() {
   sudo nala install -y "${apt_packages[@]}"
 }
 
+# --------------------------------------------------
+# Install and enable Docker Engine
+# - use Docker's upstream packages and Compose plugin
+# - add the normal user to the docker group
+# --------------------------------------------------
 install_docker_engine() {
   echo "🐳 Ensuring Docker Engine is installed..."
 
@@ -191,6 +211,12 @@ require_credential_script() {
   fi
 }
 
+# --------------------------------------------------
+# Reconcile the host SOPS/age identity
+# - restore or capture the durable age recovery identity first
+# - refuse to generate a replacement when encrypted host secrets exist
+# - ensure sops is available only after the age identity is settled
+# --------------------------------------------------
 ensure_sops() {
   if command -v sops >/dev/null 2>&1; then
     echo "✓ sops already installed"
@@ -576,6 +602,12 @@ reconcile_wireguard_credentials() {
 }
 
 
+# --------------------------------------------------
+# Configure shared shell and user environment defaults
+# - install Starship when missing
+# - expose the standard user PATH
+# - servers retain OS/tool defaults for editor/browser choices
+# --------------------------------------------------
 install_starship() {
   if command -v starship >/dev/null 2>&1; then
     echo "✓ starship already installed"
@@ -602,16 +634,25 @@ EOF_PATH
   echo "✓ Environment defaults configured"
 }
 
+# --------------------------------------------------
+# Apply required machine-specific system configuration
+# - vps01 configure-system.sh orchestrates the Wormlogic wg0 tunnel first
+# - the PVP privacy gateway is applied only after the base tunnel is ready
+# - this stage is required because recovery refresh expects final live configs
+# --------------------------------------------------
 configure_host_system() {
-  local script="$REPO_ROOT/system/$EXPECTED_MACHINE/$EXPECTED_OS/configure-system.sh"
+  local configure_script="$REPO_ROOT/system/$EXPECTED_MACHINE/$EXPECTED_OS/configure-system.sh"
 
-  if [[ ! -x "$script" ]]; then
-    echo "⚠ No executable host system configuration at $script, skipping"
-    return 0
+  if [[ ! -f "$configure_script" ]]; then
+    echo "✗ Required host system configuration is missing:"
+    echo "  $configure_script"
+    exit 1
   fi
 
   echo "⚙ Applying host-specific system configuration..."
-  "$script"
+  bash "$configure_script"
+
+  echo "✓ Host-specific system configuration complete"
 }
 
 
@@ -635,6 +676,11 @@ refresh_wireguard_recovery() {
   echo "✓ WireGuard recovery state refreshed"
 }
 
+# --------------------------------------------------
+# Install and enable shared user services and timers
+# - common maintenance/monitoring units are copied from systemd/
+# - unavailable optional units are reported and skipped explicitly
+# --------------------------------------------------
 user_systemd_available() {
   systemctl --user status >/dev/null 2>&1
 }
@@ -701,9 +747,14 @@ setup_credential_capture() {
 }
 
 
+# --------------------------------------------------
+# Prepare shell and SSH dotfiles for Stow
+# - preserve existing regular files in a timestamped backup
+# - leave already-managed symlinks untouched
+# --------------------------------------------------
 prepare_shell_dotfiles() {
   local backup_dir="$HOME/.dotfile-backups/$(date +%Y%m%d-%H%M%S)"
-  local files=("$HOME/.bashrc" "$HOME/.bash_profile" "$HOME/.bash_logout")
+  local files=("$HOME/.bashrc" "$HOME/.bash_profile" "$HOME/.bash_logout" "$HOME/.ssh/config" "$HOME/.ssh/authorized_keys")
 
   echo "🐚 Preparing shell dotfiles for stow..."
 
@@ -720,6 +771,10 @@ prepare_shell_dotfiles() {
 }
 
 
+# --------------------------------------------------
+# Apply the host-specific user environment with GNU Stow
+# - each directory under hosts/<machine>/<os>/ is a Stow package
+# --------------------------------------------------
 apply_host_environment() {
   local host_dir="$REPO_ROOT/hosts/$EXPECTED_MACHINE/$EXPECTED_OS"
 
@@ -738,6 +793,10 @@ apply_host_environment() {
   done
 }
 
+# --------------------------------------------------
+# Run an initial package-state export
+# - records the final installed state after bootstrap configuration
+# --------------------------------------------------
 run_package_export() {
   if [[ -x "$REPO_ROOT/scripts/package-export.sh" ]]; then
     echo "📦 Exporting current package state..."
@@ -747,6 +806,9 @@ run_package_export() {
   fi
 }
 
+# --------------------------------------------------
+# Show final bootstrap state and service summary
+# --------------------------------------------------
 show_summary() {
   local git_name git_email local_ip
 
@@ -803,6 +865,9 @@ show_summary() {
   fi
 }
 
+# --------------------------------------------------
+# Offer an explicit reboot after bootstrap completion
+# --------------------------------------------------
 prompt_reboot() {
   local answer=""
 
@@ -815,6 +880,12 @@ prompt_reboot() {
   esac
 }
 
+# --------------------------------------------------
+# Main bootstrap flow
+# - establish the common host baseline and durable credentials
+# - apply required vps01-specific networking through configure-system.sh
+# - finish with user services, Stow, state export, and verification summary
+# --------------------------------------------------
 main() {
   echo "🚀 Starting bootstrap for $MACHINE_LABEL ($EXPECTED_MACHINE)..."
   echo
