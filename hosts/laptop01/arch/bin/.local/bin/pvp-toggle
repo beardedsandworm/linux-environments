@@ -1,0 +1,10 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+SERVICE="wg-quick@wg-pvp.service"
+
+if systemctl is-active --quiet "$SERVICE"; then
+    exec pvp-down
+else
+    exec pvp-up
+fi

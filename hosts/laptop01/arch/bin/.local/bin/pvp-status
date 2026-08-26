@@ -1,0 +1,134 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+SERVICE="wg-quick@wg-pvp.service"
+INTERFACE="wg-pvp"
+LAB_HOST="${PVP_LAB_HOST:-10.42.42.4}"
+PVP_HOST="${PVP_HOST:-vpn.wormlogic.com}"
+BYPASS_RULE_PRIORITY="${PVP_BYPASS_RULE_PRIORITY:-10000}"
+
+STATE_DIR="${XDG_RUNTIME_DIR:-/tmp}/pvp-helper"
+TRANSPORT_FILE="$STATE_DIR/transport"
+SERVER_IP_FILE="$STATE_DIR/server-ip"
+WSTUNNEL_PID_FILE="$STATE_DIR/wstunnel.pid"
+WSTUNNEL_LOG="$STATE_DIR/wstunnel.log"
+
+echo "Service:"
+systemctl is-active "$SERVICE" || true
+
+echo
+echo "Transport:"
+if [[ -f "$TRANSPORT_FILE" ]]; then
+    case "$(<"$TRANSPORT_FILE")" in
+        native-udp-51821)
+            echo "native WireGuard UDP/51821"
+            ;;
+        wss-tcp-443-caddy)
+            echo "WireGuard → Caddy/WSS/TCP/443"
+            ;;
+        *)
+            cat "$TRANSPORT_FILE"
+            ;;
+    esac
+elif ip link show "$INTERFACE" &>/dev/null; then
+    endpoint="$(sudo wg show "$INTERFACE" endpoints 2>/dev/null | awk 'NR == 1 {print $2}')"
+
+    case "$endpoint" in
+        127.0.0.1:*)
+            echo "WireGuard → local wstunnel ($endpoint)"
+            ;;
+        *:51821)
+            echo "native WireGuard UDP/51821 ($endpoint)"
+            ;;
+        *)
+            echo "unknown ($endpoint)"
+            ;;
+    esac
+else
+    echo "inactive"
+fi
+
+echo
+echo "WireGuard endpoint:"
+if ip link show "$INTERFACE" &>/dev/null; then
+    sudo wg show "$INTERFACE" endpoints || true
+else
+    echo "Interface $INTERFACE is not present."
+fi
+
+echo
+echo "Latest handshake:"
+if ip link show "$INTERFACE" &>/dev/null; then
+    latest="$(sudo wg show "$INTERFACE" latest-handshakes 2>/dev/null \
+        | awk 'NR == 1 {print $2}')"
+
+    if [[ "${latest:-0}" =~ ^[0-9]+$ ]] && (( latest > 0 )); then
+        now="$(date +%s)"
+        age=$((now - latest))
+        echo "${age}s ago"
+    else
+        echo "never"
+    fi
+else
+    echo "n/a"
+fi
+
+echo
+echo "WSTunnel:"
+if [[ -f "$WSTUNNEL_PID_FILE" ]]; then
+    pid="$(<"$WSTUNNEL_PID_FILE")"
+
+    if [[ "$pid" =~ ^[0-9]+$ ]] && kill -0 "$pid" 2>/dev/null; then
+        echo "active (PID $pid)"
+        echo "public transport: wss://$PVP_HOST:443 via Caddy"
+    else
+        echo "stale PID file"
+    fi
+else
+    echo "inactive"
+fi
+
+echo
+echo "Heighliner bypass:"
+if [[ -f "$SERVER_IP_FILE" ]]; then
+    server_ip="$(<"$SERVER_IP_FILE")"
+    echo "Server IP: $server_ip"
+
+    ip rule show \
+        | grep -E "^${BYPASS_RULE_PRIORITY}:.*to ${server_ip}(/32)? .*lookup main" \
+        || echo "No WSS bypass rule active"
+else
+    echo "No saved server IP"
+fi
+
+echo
+echo "Default route:"
+ip route show default
+
+echo
+echo "Route to $PVP_HOST:"
+if [[ -f "$SERVER_IP_FILE" ]]; then
+    ip route get "$(<"$SERVER_IP_FILE")" || true
+else
+    getent ahostsv4 "$PVP_HOST" \
+        | awk 'NR == 1 {print $1}' \
+        | xargs -r ip route get || true
+fi
+
+echo
+echo "Route to Arrakis:"
+ip route get "$LAB_HOST" || true
+
+echo
+echo "WireGuard:"
+if ip link show "$INTERFACE" &>/dev/null; then
+    sudo wg show "$INTERFACE"
+else
+    echo "Interface $INTERFACE is not present."
+fi
+
+if [[ -f "$WSTUNNEL_LOG" ]]; then
+    echo
+    echo "WSTunnel log:"
+    tail -n 8 "$WSTUNNEL_LOG" || true
+fi

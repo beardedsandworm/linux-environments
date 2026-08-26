@@ -1,0 +1,14 @@
+android-sdk-cmdline-tools-latest
+bambu-studio
+betterdiscord-installer
+cursor-early-access-bin
+displaylink
+heroic-games-launcher-bin
+orca-slicer
+ttf-genzengothic-kai
+ttf-kosugi
+ttf-kosugi-maru
+ttf-lxgw-wenkai
+ttf-zen-kakugothic-new
+ttf-zen-maru-gothic
+upscayl-bin

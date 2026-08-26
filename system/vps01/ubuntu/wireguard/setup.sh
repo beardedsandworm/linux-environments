@@ -3,11 +3,11 @@ set -euo pipefail
 umask 077
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-REPO_ROOT="$(cd "$SCRIPT_DIR/../../../.." && pwd)"
-SECRET_DIR="$REPO_ROOT/secrets/vps01"
+WIREGUARD_STATE_DIR="${WIREGUARD_CREDENTIAL_DIR:-${XDG_CONFIG_HOME:-$HOME/.config}/dotfiles/wireguard}"
 PEER_DIR="$SCRIPT_DIR/peers"
 
-WG0_SECRET="$SECRET_DIR/wg0.key.enc"
+WG0_RECOVERED_CONF="$WIREGUARD_STATE_DIR/wg0.conf"
+WG0_RECOVERED_PUBLIC="$WIREGUARD_STATE_DIR/wg0.public-key"
 EXPECTED_PUBLIC_FILE="$SCRIPT_DIR/heighliner.pub"
 WG0_CONF="/etc/wireguard/wg0.conf"
 WG0_PUBLIC="/etc/wireguard/wg0.public"
@@ -39,15 +39,19 @@ require_file() {
   }
 }
 
-decrypt_binary_secret() {
-  local source_file="$1"
-  local target_file="$2"
+private_key_from_config() {
+  local config_file="$1"
 
-  sops --decrypt \
-    --input-type json \
-    --output-type binary \
-    "$source_file" > "$target_file"
-  chmod 600 "$target_file"
+  awk '
+    /^[[:space:]]*PrivateKey[[:space:]]*=/ {
+      pos=index($0, "=")
+      value=substr($0, pos + 1)
+      sub(/^[[:space:]]*/, "", value)
+      sub(/[[:space:]]*$/, "", value)
+      print value
+      exit
+    }
+  ' "$config_file"
 }
 
 validate_peer_file() {
@@ -65,9 +69,17 @@ validate_peer_file() {
 }
 
 build_config() {
-  local private_key_file="$1"
+  local recovered_config="$1"
   local output_file="$2"
+  local private_key
   local -a peer_files=()
+
+  private_key="$(private_key_from_config "$recovered_config")"
+
+  if [[ -z "$private_key" ]]; then
+    echo "✗ Recovered wg0 config has no PrivateKey: $recovered_config"
+    exit 1
+  fi
 
   shopt -s nullglob
   peer_files=("$PEER_DIR"/*.conf)
@@ -80,7 +92,7 @@ build_config() {
 
   {
     echo "[Interface]"
-    printf 'PrivateKey = %s\n' "$(<"$private_key_file")"
+    printf 'PrivateKey = %s\n' "$private_key"
     echo "Address = $WG0_ADDRESS"
     echo "ListenPort = $WG0_PORT"
 
@@ -98,13 +110,13 @@ build_config() {
 
 install_files() {
   local config_temp="$1"
-  local public_temp="$2"
+  local public_source="$2"
 
   sudo install -d -m 0700 /etc/wireguard
   sudo install -d -m 0755 /etc/nftables.d
 
   sudo install -m 0600 "$config_temp" "$WG0_CONF"
-  sudo install -m 0644 "$public_temp" "$WG0_PUBLIC"
+  sudo install -m 0644 "$public_source" "$WG0_PUBLIC"
   sudo install -m 0644 "$SCRIPT_DIR/sysctl.conf" /etc/sysctl.d/99-wormlogic-network.conf
   sudo install -m 0644 "$SCRIPT_DIR/wormlogic.nft" /etc/nftables.d/wormlogic-wg.nft
   sudo install -m 0644 "$SCRIPT_DIR/wormlogic-wg.service" /etc/systemd/system/wormlogic-wg.service
@@ -139,44 +151,39 @@ activate_wg0() {
 main() {
   echo "🔐 Configuring Heighliner Wormlogic tunnel (wg0)..."
 
-  for command_name in sops wg wg-quick ip nft systemctl; do
+  for command_name in wg wg-quick ip nft systemctl awk; do
     require_command "$command_name"
   done
 
-  require_file "$WG0_SECRET" "encrypted wg0 private key"
+  require_file "$WG0_RECOVERED_CONF" "recovered wg0 config"
+  require_file "$WG0_RECOVERED_PUBLIC" "recovered wg0 public key"
   require_file "$EXPECTED_PUBLIC_FILE" "expected Heighliner wg0 public key"
   require_file "$SCRIPT_DIR/sysctl.conf" "Wormlogic sysctl configuration"
   require_file "$SCRIPT_DIR/wormlogic.nft" "Wormlogic nftables rules"
   require_file "$SCRIPT_DIR/wormlogic-wg.service" "Wormlogic systemd unit"
 
-  TMP_DIR="$(mktemp -d)"
-  chmod 700 "$TMP_DIR"
-
-  local key_temp="$TMP_DIR/wg0.key"
-  local config_temp="$TMP_DIR/wg0.conf"
-  local public_temp="$TMP_DIR/wg0.public"
-  local stripped_temp="$TMP_DIR/wg0.stripped"
-
-  decrypt_binary_secret "$WG0_SECRET" "$key_temp"
-  wg pubkey < "$key_temp" > "$public_temp"
-  chmod 644 "$public_temp"
-
-  local actual_public expected_public
-  actual_public="$(<"$public_temp")"
+  local recovered_public expected_public
+  recovered_public="$(tr -d '\r\n' < "$WG0_RECOVERED_PUBLIC")"
   expected_public="$(tr -d '\r\n' < "$EXPECTED_PUBLIC_FILE")"
 
-  if [[ "$actual_public" != "$expected_public" ]]; then
-    echo "✗ Restored wg0 private key does not match Heighliner's expected identity"
-    echo "  Expected public key: $expected_public"
-    echo "  Derived public key:  $actual_public"
+  if [[ "$recovered_public" != "$expected_public" ]]; then
+    echo "✗ Recovered wg0 public key does not match Heighliner's expected identity"
+    echo "  Expected public key:  $expected_public"
+    echo "  Recovered public key: $recovered_public"
     exit 1
   fi
 
-  build_config "$key_temp" "$config_temp"
+  TMP_DIR="$(mktemp -d)"
+  chmod 700 "$TMP_DIR"
+
+  local config_temp="$TMP_DIR/wg0.conf"
+  local stripped_temp="$TMP_DIR/wg0.stripped"
+
+  build_config "$WG0_RECOVERED_CONF" "$config_temp"
   wg-quick strip "$config_temp" > "$stripped_temp"
   chmod 600 "$stripped_temp"
 
-  install_files "$config_temp" "$public_temp"
+  install_files "$config_temp" "$WG0_RECOVERED_PUBLIC"
   activate_wg0 "$stripped_temp"
 
   if [[ "$(sudo wg show wg0 public-key)" != "$expected_public" ]]; then

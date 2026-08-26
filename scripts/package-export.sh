@@ -62,14 +62,37 @@ write_if_changed() {
 
 remove_if_exists() {
   local outfile="$1"
+
   if [[ -f "$outfile" ]]; then
     rm -f "$outfile"
     echo "$LOG_PREFIX Removed stale file: $(basename "$outfile")"
+    return 0
   fi
+
+  return 1
 }
 
 export_arch_pacman() {
-  pacman -Qqe | sort
+  # Explicitly installed packages that are present in a configured sync DB.
+  # These belong in pacman.txt and are restored with pacman.
+  pacman -Qqen | sort
+}
+
+export_arch_yay() {
+  # Explicitly installed "foreign" packages are absent from configured sync
+  # databases. In this lab these are normally AUR packages and are restored
+  # through yay. yay itself is bootstrapped separately, so do not export it.
+  #
+  # Note: pacman cannot distinguish an AUR package from an arbitrary locally
+  # built/installed package. If a non-AUR local package appears here, it needs
+  # its own recovery treatment instead of being assumed to exist in the AUR.
+  pacman -Qqem | awk '$0 != "yay"' | sort
+}
+
+export_arch_repos() {
+  # Capture enabled repository names as drift/recovery metadata. This does not
+  # copy pacman.conf or repository URLs/credentials.
+  pacman-conf --repo-list | sort
 }
 
 export_ubuntu_apt() {
@@ -97,6 +120,24 @@ if [[ "$DISTRO" == "arch" ]]; then
     changed=1
   fi
 
+  tmp_yay="$(mktemp)"
+  export_arch_yay >"$tmp_yay"
+  if write_if_changed "$tmp_yay" "$TARGET_DIR/yay.txt"; then
+    changed=1
+  fi
+
+  if command -v pacman-conf >/dev/null 2>&1; then
+    tmp_repos="$(mktemp)"
+    export_arch_repos >"$tmp_repos"
+    if write_if_changed "$tmp_repos" "$TARGET_DIR/pacman-repos.txt"; then
+      changed=1
+    fi
+  else
+    if remove_if_exists "$TARGET_DIR/pacman-repos.txt"; then
+      changed=1
+    fi
+  fi
+
   if command -v flatpak >/dev/null 2>&1; then
     tmp_flatpak="$(mktemp)"
     export_flatpak >"$tmp_flatpak"
@@ -104,7 +145,9 @@ if [[ "$DISTRO" == "arch" ]]; then
       changed=1
     fi
   else
-    remove_if_exists "$TARGET_DIR/flatpak.txt"
+    if remove_if_exists "$TARGET_DIR/flatpak.txt"; then
+      changed=1
+    fi
   fi
 fi
 
@@ -122,7 +165,9 @@ if [[ "$DISTRO" == "ubuntu" ]]; then
       changed=1
     fi
   else
-    remove_if_exists "$TARGET_DIR/snap.txt"
+    if remove_if_exists "$TARGET_DIR/snap.txt"; then
+      changed=1
+    fi
   fi
 
   if command -v flatpak >/dev/null 2>&1; then
@@ -132,7 +177,9 @@ if [[ "$DISTRO" == "ubuntu" ]]; then
       changed=1
     fi
   else
-    remove_if_exists "$TARGET_DIR/flatpak.txt"
+    if remove_if_exists "$TARGET_DIR/flatpak.txt"; then
+      changed=1
+    fi
   fi
 
   if command -v brew >/dev/null 2>&1; then
@@ -142,7 +189,9 @@ if [[ "$DISTRO" == "ubuntu" ]]; then
       changed=1
     fi
   else
-    remove_if_exists "$TARGET_DIR/brew.txt"
+    if remove_if_exists "$TARGET_DIR/brew.txt"; then
+      changed=1
+    fi
   fi
 fi
 

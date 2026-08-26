@@ -144,6 +144,53 @@ install_docker_engine() {
   echo "✓ Docker Engine ready"
 }
 
+
+# --------------------------------------------------
+# Credential reconciliation helpers
+# - all credential workflows use the same decision tree:
+#     local + repo  -> prompt for authoritative source
+#     local only    -> capture
+#     repo only     -> restore
+#     neither       -> generate + capture
+# --------------------------------------------------
+choose_authoritative_source() {
+  local credential_name="$1"
+  local choice
+
+  echo
+  echo "⚠ $credential_name credentials exist both locally and in the repository."
+  echo "  Choose which copy is authoritative:"
+  echo "    [l] local  -> capture local credentials into the repository"
+  echo "    [r] repo   -> restore repository credentials onto this machine"
+  echo
+
+  while true; do
+    read -r -p "Authoritative source [l/r]: " choice
+    case "${choice,,}" in
+      l|local)
+        AUTHORITATIVE_SOURCE="local"
+        return 0
+        ;;
+      r|repo|repository)
+        AUTHORITATIVE_SOURCE="repo"
+        return 0
+        ;;
+      *)
+        echo "Please enter 'l' for local or 'r' for repo."
+        ;;
+    esac
+  done
+}
+
+require_credential_script() {
+  local script="$1"
+
+  if [[ ! -f "$script" ]]; then
+    echo "✗ Required credential helper is missing: $script"
+    exit 1
+  fi
+}
+
 ensure_sops() {
   if command -v sops >/dev/null 2>&1; then
     echo "✓ sops already installed"
@@ -184,51 +231,84 @@ ensure_sops() {
 setup_age_identity() {
   local age_base_dir="${XDG_CONFIG_HOME:-$HOME/.config}/sops"
   local age_dir="$age_base_dir/age"
-  local key_file="$age_dir/keys.txt"
+  local key_file="${SOPS_AGE_KEY_FILE:-$age_dir/keys.txt}"
+  local key_dir
   local dotfiles_dir="${XDG_CONFIG_HOME:-$HOME/.config}/dotfiles"
   local public_key_file="$dotfiles_dir/age-public-key"
-  local host_secret_dir="$REPO_ROOT/secrets/$EXPECTED_MACHINE"
-  local age_recovery_file="$host_secret_dir/age-key.age"
-  local age_restore_script="$REPO_ROOT/scripts/restore-age-key.sh"
-  local public_key=""
+  local machine_id host_secret_dir recovery_file
+  local capture_script restore_script public_key backup_file
+  local local_exists=0 repo_exists=0
 
-  echo "🔐 Restoring/creating SOPS age identity..."
+  echo "🔐 Reconciling SOPS age identity..."
 
   if ! command -v age >/dev/null 2>&1 || ! command -v age-keygen >/dev/null 2>&1; then
     echo "✗ age/age-keygen not found. Ensure 'age' is installed by apt.txt."
     exit 1
   fi
 
-  mkdir -p "$age_dir" "$dotfiles_dir"
-  chmod 700 "$age_base_dir" "$age_dir"
+  machine_id="$(tr -d '\r\n' < "$MACHINE_ID_FILE")"
+  host_secret_dir="$REPO_ROOT/secrets/$machine_id"
+  recovery_file="$host_secret_dir/age-key.age"
+  capture_script="$REPO_ROOT/scripts/capture-age-key.sh"
+  restore_script="$REPO_ROOT/scripts/restore-age-key.sh"
+  key_dir="$(dirname "$key_file")"
 
-  # Recovery is attempted before generating a new identity. The recovery blob
-  # is passphrase-encrypted with age itself, so this step does not depend on SOPS.
-  if [[ ! -f "$key_file" && -f "$age_recovery_file" ]]; then
-    if [[ ! -x "$age_restore_script" ]]; then
-      echo "✗ Age recovery exists but restore helper is missing or not executable:"
-      echo "  $age_restore_script"
+  require_credential_script "$capture_script"
+  require_credential_script "$restore_script"
+
+  mkdir -p "$key_dir" "$dotfiles_dir" "$age_base_dir"
+  chmod 700 "$key_dir" "$age_base_dir"
+
+  if [[ -f "$key_file" ]]; then
+    public_key="$(age-keygen -y "$key_file" 2>/dev/null || true)"
+    if [[ ! "$public_key" =~ ^age1 ]]; then
+      echo "✗ Existing local age identity is invalid: $key_file"
       exit 1
     fi
-
-    echo "🔐 Stored age recovery identity found for $EXPECTED_MACHINE"
-    "$age_restore_script"
+    local_exists=1
   fi
 
-  if [[ ! -f "$key_file" ]]; then
+  [[ -f "$recovery_file" ]] && repo_exists=1
+
+  if (( local_exists && repo_exists )); then
+    choose_authoritative_source "age"
+
+    if [[ "$AUTHORITATIVE_SOURCE" == "local" ]]; then
+      bash "$capture_script" --force
+    else
+      # restore-age-key.sh intentionally leaves a valid local identity alone.
+      # Move it aside temporarily so the declared repository copy can be
+      # restored; put it back if restoration fails.
+      backup_file="${key_file}.pre-bootstrap.$$"
+      mv "$key_file" "$backup_file"
+
+      if bash "$restore_script"; then
+        rm -f "$backup_file"
+      else
+        mv "$backup_file" "$key_file"
+        echo "✗ Repository age restore failed; original local identity restored."
+        exit 1
+      fi
+    fi
+  elif (( local_exists )); then
+    echo "✓ Local age identity found; no repository recovery copy exists"
+    bash "$capture_script"
+  elif (( repo_exists )); then
+    echo "✓ Repository age recovery copy found; restoring it"
+    bash "$restore_script"
+  else
     if [[ -d "$host_secret_dir" ]] && \
-       find "$host_secret_dir" -maxdepth 1 -type f -name '*.enc' -print -quit | grep -q .; then
-      echo "✗ Encrypted host secrets exist, but this machine has no SOPS age private key."
-      echo "  Expected recovery copy: $age_recovery_file"
+       find "$host_secret_dir" -type f -name '*.enc' -print -quit | grep -q .; then
+      echo "✗ Encrypted secrets exist for $machine_id, but no age identity exists"
+      echo "  locally or at: $recovery_file"
       echo "  Refusing to generate an incompatible replacement identity."
       exit 1
     fi
 
+    echo "• No local or repository age identity found; generating a new one..."
     age-keygen -o "$key_file"
-    echo "✓ New age identity generated"
-    echo "  After bootstrap, run scripts/capture-age-key.sh to escrow it."
-  else
-    echo "✓ Existing/restored age identity found"
+    chmod 600 "$key_file"
+    bash "$capture_script"
   fi
 
   chmod 600 "$key_file"
@@ -242,9 +322,11 @@ setup_age_identity() {
   printf '%s\n' "$public_key" > "$public_key_file"
   chmod 644 "$public_key_file"
 
+  AGE_PUBLIC_KEY="$public_key"
+  AGE_RECOVERY_FILE="$recovery_file"
+
   echo "✓ age identity ready"
-  echo "  Public key:  $public_key"
-  echo "  Private key: $key_file"
+  echo "  Public key: $public_key"
 }
 
 setup_age_and_sops() {
@@ -253,34 +335,246 @@ setup_age_and_sops() {
   echo "✓ age + sops ready"
 }
 
-ensure_ssh_key() {
+# --------------------------------------------------
+# Reconcile SSH credentials
+# - SOPS/age-encrypted private keys are stored under secrets/<machine-id>/ssh
+# - public keys are regenerated by restore-ssh-credentials.sh
+# - authorized_keys/config remain declarative dotfiles and are not captured
+# --------------------------------------------------
+is_user_ssh_private_key() {
+  local path="$1"
+  local first_line=""
+
+  [[ -f "$path" ]] || return 1
+
+  case "$(basename "$path")" in
+    *.pub|*-cert.pub|authorized_keys|authorized_keys2|known_hosts|known_hosts.old|known_hosts.*|config|environment|rc)
+      return 1
+      ;;
+  esac
+
+  IFS= read -r first_line < "$path" || true
+  case "$first_line" in
+    "-----BEGIN OPENSSH PRIVATE KEY-----"|\
+    "-----BEGIN RSA PRIVATE KEY-----"|\
+    "-----BEGIN DSA PRIVATE KEY-----"|\
+    "-----BEGIN EC PRIVATE KEY-----"|\
+    "-----BEGIN PRIVATE KEY-----"|\
+    "-----BEGIN ENCRYPTED PRIVATE KEY-----"|\
+    "---- BEGIN SSH2 ENCRYPTED PRIVATE KEY ----")
+      return 0
+      ;;
+    *)
+      return 1
+      ;;
+  esac
+}
+
+has_local_ssh_credentials() {
+  local path
+
+  if [[ -d "$HOME/.ssh" ]]; then
+    while IFS= read -r -d '' path; do
+      if is_user_ssh_private_key "$path"; then
+        return 0
+      fi
+    done < <(find "$HOME/.ssh" -maxdepth 1 -type f -print0 2>/dev/null)
+  fi
+
+  sudo find /etc/ssh -maxdepth 1 -type f -name 'ssh_host_*_key' \
+    -print -quit 2>/dev/null | grep -q .
+}
+
+ensure_local_ssh_credentials() {
   local ssh_dir="$HOME/.ssh"
   local key_file="$ssh_dir/id_ed25519"
   local pub_file="${key_file}.pub"
 
-  echo "🔑 Checking for SSH key..."
-
   mkdir -p "$ssh_dir"
   chmod 700 "$ssh_dir"
 
-  if [[ -f "$pub_file" ]]; then
-    echo "✓ SSH public key already exists"
-    return 0
+  # Preserve the original bootstrap behavior: vps01 gets a user ed25519
+  # identity, but an existing private key is never overwritten.
+  if [[ ! -f "$key_file" ]]; then
+    echo "• Generating missing user SSH identity..."
+    ssh-keygen -t ed25519 \
+      -f "$key_file" \
+      -N "" \
+      -C "$EXPECTED_MACHINE-$(hostname)"
   fi
 
-  if [[ -f "$key_file" ]]; then
-    ssh-keygen -y -f "$key_file" > "$pub_file"
-    chmod 644 "$pub_file"
-    echo "✓ SSH public key regenerated from private key"
-    return 0
-  fi
-
-  ssh-keygen -t ed25519 -f "$key_file" -N "" -C "$EXPECTED_MACHINE-$(hostname)"
   chmod 600 "$key_file"
+
+  if [[ ! -f "$pub_file" ]]; then
+    ssh-keygen -y -f "$key_file" > "$pub_file"
+  fi
   chmod 644 "$pub_file"
 
-  echo "✓ SSH key generated"
+  # Generate any missing OpenSSH host-key types without replacing existing
+  # host identities.
+  sudo ssh-keygen -A
 }
+
+reconcile_ssh_credentials() {
+  local machine_id ssh_secret_dir capture_script restore_script
+  local local_exists=0 repo_exists=0
+
+  echo "🔑 Reconciling SSH credentials..."
+
+  machine_id="$(tr -d '\r\n' < "$MACHINE_ID_FILE")"
+  ssh_secret_dir="$REPO_ROOT/secrets/$machine_id/ssh"
+  capture_script="$REPO_ROOT/scripts/capture-ssh-credentials.sh"
+  restore_script="$REPO_ROOT/scripts/restore-ssh-credentials.sh"
+
+  require_credential_script "$capture_script"
+  require_credential_script "$restore_script"
+
+  has_local_ssh_credentials && local_exists=1
+  if [[ -d "$ssh_secret_dir" ]] && \
+     find "$ssh_secret_dir" -type f -name '*.enc' -print -quit | grep -q .; then
+    repo_exists=1
+  fi
+
+  if (( local_exists && repo_exists )); then
+    choose_authoritative_source "SSH"
+
+    if [[ "$AUTHORITATIVE_SOURCE" == "local" ]]; then
+      ensure_local_ssh_credentials
+      bash "$capture_script" --force
+    else
+      bash "$restore_script" --force
+    fi
+  elif (( local_exists )); then
+    echo "✓ Local SSH credentials found; no repository copy exists"
+    ensure_local_ssh_credentials
+    bash "$capture_script"
+  elif (( repo_exists )); then
+    echo "✓ Repository SSH credentials found; restoring them"
+    bash "$restore_script" --force
+  else
+    echo "• No local or repository SSH credentials found; generating them..."
+    ensure_local_ssh_credentials
+    bash "$capture_script"
+  fi
+
+  echo "✓ SSH credentials ready"
+}
+
+# --------------------------------------------------
+# Reconcile WireGuard recovery state
+# - Heighliner may own wg0, wg-pvp, and wg-proton
+# - recovery artifacts are complete encrypted *.conf files
+# - restore stages each config plus its derived .public-key
+# --------------------------------------------------
+has_local_wireguard_configs() {
+  sudo test -d /etc/wireguard && \
+    sudo find /etc/wireguard -maxdepth 1 -type f -name '*.conf' -print -quit 2>/dev/null | grep -q .
+}
+
+has_repo_wireguard_configs() {
+  local secret_dir="$1"
+
+  [[ -d "$secret_dir" ]] && \
+    find "$secret_dir" -maxdepth 1 -type f -name '*.conf.enc' -print -quit | grep -q .
+}
+
+generate_initial_vps_wireguard_configs() {
+  local capture_script="$1"
+  local restore_script="$2"
+  local temp_dir iface private_key
+  local -a generated_interfaces=(wg0 wg-pvp)
+
+  temp_dir="$(mktemp -d)"
+  trap 'rm -rf -- "$temp_dir"' RETURN
+  chmod 700 "$temp_dir"
+
+  # wg0 and wg-pvp are Heighliner-owned identities. Minimal configs are enough
+  # for the host setup scripts to recover those identities and construct their
+  # final repo-defined configurations. wg-proton is provider-issued and cannot
+  # be generated locally.
+  for iface in "${generated_interfaces[@]}"; do
+    private_key="$(wg genkey)"
+    {
+      echo "[Interface]"
+      echo "PrivateKey = $private_key"
+    } > "$temp_dir/$iface.conf"
+    chmod 600 "$temp_dir/$iface.conf"
+  done
+
+  WIREGUARD_CONFIG_DIR="$temp_dir" bash "$capture_script"
+  bash "$restore_script" --force
+
+  rm -rf -- "$temp_dir"
+  trap - RETURN
+
+  echo "✓ Generated and captured Heighliner-owned identities: wg0, wg-pvp"
+  echo "⚠ wg-proton is provider-issued and cannot be generated locally."
+}
+
+reconcile_wireguard_credentials() {
+  local machine_id wireguard_secret_dir capture_script restore_script
+  local staged_dir
+  local local_exists=0 repo_exists=0
+
+  echo "🔐 Reconciling WireGuard credentials..."
+
+  if ! command -v wg >/dev/null 2>&1; then
+    echo "✗ wg not found. wireguard-tools must be installed first."
+    exit 1
+  fi
+
+  machine_id="$(tr -d '\r\n' < "$MACHINE_ID_FILE")"
+  wireguard_secret_dir="$REPO_ROOT/secrets/$machine_id/wireguard"
+  staged_dir="${XDG_CONFIG_HOME:-$HOME/.config}/dotfiles/wireguard"
+  capture_script="$REPO_ROOT/scripts/capture-wireguard-credentials.sh"
+  restore_script="$REPO_ROOT/scripts/restore-wireguard-credentials.sh"
+
+  require_credential_script "$capture_script"
+  require_credential_script "$restore_script"
+
+  has_local_wireguard_configs && local_exists=1
+  has_repo_wireguard_configs "$wireguard_secret_dir" && repo_exists=1
+
+  if (( local_exists && repo_exists )); then
+    choose_authoritative_source "WireGuard"
+
+    if [[ "$AUTHORITATIVE_SOURCE" == "local" ]]; then
+      echo "• Local WireGuard configs selected as authoritative"
+      bash "$capture_script" --force
+      bash "$restore_script" --force
+    else
+      echo "• Repository WireGuard configs selected as authoritative"
+      bash "$restore_script" --force
+    fi
+  elif (( local_exists )); then
+    echo "✓ Local WireGuard configs found; no repository copy exists"
+    bash "$capture_script"
+    bash "$restore_script" --force
+  elif (( repo_exists )); then
+    echo "✓ Repository WireGuard configs found; restoring them"
+    bash "$restore_script" --force
+  else
+    echo "• No local or repository WireGuard configs found; generating locally-owned identities..."
+    generate_initial_vps_wireguard_configs "$capture_script" "$restore_script"
+  fi
+
+  for iface in wg0 wg-pvp; do
+    if [[ ! -f "$staged_dir/$iface.conf" || ! -f "$staged_dir/$iface.public-key" ]]; then
+      echo "✗ WireGuard reconciliation is missing required Heighliner state for $iface"
+      exit 1
+    fi
+  done
+
+  if [[ ! -f "$staged_dir/wg-proton.conf" || ! -f "$staged_dir/wg-proton.public-key" ]]; then
+    echo "✗ Proton WireGuard recovery state is missing."
+    echo "  Heighliner cannot generate provider-issued wg-proton credentials."
+    echo "  Provision /etc/wireguard/wg-proton.conf, capture it, and rerun the bootstrap."
+    exit 1
+  fi
+
+  echo "✓ WireGuard recovery state ready"
+}
+
 
 install_starship() {
   if command -v starship >/dev/null 2>&1; then
@@ -318,6 +612,27 @@ configure_host_system() {
 
   echo "⚙ Applying host-specific system configuration..."
   "$script"
+}
+
+
+# --------------------------------------------------
+# Refresh complete WireGuard recovery artifacts from final live state
+# - configure-system.sh has now built the authoritative production configs
+# - capture them once as complete *.conf.enc files, then refresh staging/public keys
+# --------------------------------------------------
+refresh_wireguard_recovery() {
+  local capture_script="$REPO_ROOT/scripts/capture-wireguard-credentials.sh"
+  local restore_script="$REPO_ROOT/scripts/restore-wireguard-credentials.sh"
+
+  echo "🔐 Refreshing WireGuard recovery state from final live configs..."
+
+  require_credential_script "$capture_script"
+  require_credential_script "$restore_script"
+
+  bash "$capture_script" --force
+  bash "$restore_script" --force
+
+  echo "✓ WireGuard recovery state refreshed"
 }
 
 user_systemd_available() {
@@ -369,6 +684,23 @@ setup_shared_monitoring() {
   setup_user_service_pair "heartbeat"
 }
 
+setup_credential_capture() {
+  local service_source="$REPO_ROOT/systemd/credential-capture.service"
+  local timer_source="$REPO_ROOT/systemd/credential-capture.timer"
+
+  echo "⚙ Setting up scheduled credential capture..."
+
+  if [[ ! -f "$service_source" || ! -f "$timer_source" ]]; then
+    CREDENTIAL_CAPTURE_CONFIGURED=0
+    echo "⚠ credential-capture.service/timer not present yet; skipping"
+    return 0
+  fi
+
+  setup_user_service_pair "credential-capture"
+  CREDENTIAL_CAPTURE_CONFIGURED=1
+}
+
+
 prepare_shell_dotfiles() {
   local backup_dir="$HOME/.dotfile-backups/$(date +%Y%m%d-%H%M%S)"
   local files=("$HOME/.bashrc" "$HOME/.bash_profile" "$HOME/.bash_logout")
@@ -387,17 +719,6 @@ prepare_shell_dotfiles() {
   done
 }
 
-apply_bash_stow() {
-  local stow_dir="$REPO_ROOT/stow"
-
-  if [[ ! -d "$stow_dir/bash" ]]; then
-    echo "⚠ Bash stow package not found at $stow_dir/bash, skipping"
-    return 0
-  fi
-
-  echo "🐚 Stowing bash config..."
-  stow -d "$stow_dir" -t "$HOME" bash
-}
 
 apply_host_environment() {
   local host_dir="$REPO_ROOT/hosts/$EXPECTED_MACHINE/$EXPECTED_OS"
@@ -456,6 +777,11 @@ show_summary() {
   echo "  - dotfiles-change-check → local dotfiles drift awareness"
   echo "  - disk-space-check      → local disk usage warning"
   echo "  - heartbeat             → device online signal"
+  if [[ "${CREDENTIAL_CAPTURE_CONFIGURED:-0}" -eq 1 ]]; then
+    echo "  - credential-capture    → encrypted credential state capture"
+  else
+    echo "  - credential-capture    → pending service/timer unit files"
+  fi
   echo
   echo "Docker:"
   docker --version || true
@@ -506,20 +832,22 @@ main() {
   # decrypted. This is the linchpin for disaster recovery.
   setup_age_and_sops
 
-  ensure_ssh_key
+  reconcile_ssh_credentials
+  reconcile_wireguard_credentials
   install_starship
   set_user_environment_defaults
 
   # Machine-specific system configuration is intentionally delegated. For
   # vps01 this orchestrates the Wormlogic wg0 tunnel first, then the PVP stack.
   configure_host_system
+  refresh_wireguard_recovery
 
   setup_package_export
   setup_system_update
   setup_git_monitoring
   setup_shared_monitoring
+  setup_credential_capture
   prepare_shell_dotfiles
-  apply_bash_stow
   apply_host_environment
   run_package_export
   show_summary

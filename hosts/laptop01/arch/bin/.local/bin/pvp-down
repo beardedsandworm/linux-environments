@@ -1,0 +1,50 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+SERVICE="wg-quick@wg-pvp.service"
+
+BYPASS_RULE_PRIORITY="${PVP_BYPASS_RULE_PRIORITY:-10000}"
+
+STATE_DIR="${XDG_RUNTIME_DIR:-/tmp}/pvp-helper"
+SERVER_IP_FILE="$STATE_DIR/server-ip"
+WSTUNNEL_PID_FILE="$STATE_DIR/wstunnel.pid"
+
+server_ip=""
+if [[ -f "$SERVER_IP_FILE" ]]; then
+    server_ip="$(<"$SERVER_IP_FILE")"
+fi
+
+if systemctl is-active --quiet "$SERVICE"; then
+    sudo systemctl stop "$SERVICE"
+    echo "PVP stopped."
+else
+    echo "PVP is already inactive."
+fi
+
+if [[ -f "$WSTUNNEL_PID_FILE" ]]; then
+    pid="$(<"$WSTUNNEL_PID_FILE")"
+
+    if [[ "$pid" =~ ^[0-9]+$ ]] && kill -0 "$pid" 2>/dev/null; then
+        kill "$pid" 2>/dev/null || true
+
+        for _ in {1..20}; do
+            kill -0 "$pid" 2>/dev/null || break
+            sleep 0.1
+        done
+
+        kill -9 "$pid" 2>/dev/null || true
+    fi
+fi
+
+if [[ -n "$server_ip" ]]; then
+    sudo ip rule del \
+        priority "$BYPASS_RULE_PRIORITY" \
+        to "$server_ip/32" \
+        table main \
+        2>/dev/null || true
+fi
+
+rm -rf "$STATE_DIR"
+
+systemctl --no-pager --full status "$SERVICE" 2>/dev/null \
+    | sed -n '1,8p' || true

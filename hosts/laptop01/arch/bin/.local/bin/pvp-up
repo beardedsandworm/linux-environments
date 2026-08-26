@@ -1,0 +1,237 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+SERVICE="wg-quick@wg-pvp.service"
+INTERFACE="wg-pvp"
+
+PVP_HOST="${PVP_HOST:-vpn.wormlogic.com}"
+PVP_NATIVE_PORT="${PVP_NATIVE_PORT:-51821}"
+PVP_WSTUNNEL_LOCAL_PORT="${PVP_WSTUNNEL_LOCAL_PORT:-51822}"
+PVP_GATEWAY="${PVP_GATEWAY:-10.9.0.1}"
+
+# Must be numerically before wg-quick's full-tunnel policy rules.
+BYPASS_RULE_PRIORITY="${PVP_BYPASS_RULE_PRIORITY:-10000}"
+
+STATE_DIR="${XDG_RUNTIME_DIR:-/tmp}/pvp-helper"
+TRANSPORT_FILE="$STATE_DIR/transport"
+SERVER_IP_FILE="$STATE_DIR/server-ip"
+WSTUNNEL_PID_FILE="$STATE_DIR/wstunnel.pid"
+WSTUNNEL_LOG="$STATE_DIR/wstunnel.log"
+
+mkdir -p "$STATE_DIR"
+
+resolve_server_ip() {
+    getent ahostsv4 "$PVP_HOST" \
+        | awk '$1 ~ /^[0-9]+\./ {print $1; exit}'
+}
+
+get_peer() {
+    sudo wg show "$INTERFACE" peers 2>/dev/null | awk 'NR == 1 {print $1}'
+}
+
+handshake_is_fresh() {
+    local peer="$1"
+    local latest now
+
+    latest="$(sudo wg show "$INTERFACE" latest-handshakes 2>/dev/null \
+        | awk -v peer="$peer" '$1 == peer {print $2; exit}')"
+
+    [[ "${latest:-0}" =~ ^[0-9]+$ ]] || return 1
+    (( latest > 0 )) || return 1
+
+    now="$(date +%s)"
+    (( now - latest <= 15 ))
+}
+
+probe_tunnel() {
+    local peer="$1"
+    local attempts="${2:-6}"
+
+    # Generate traffic immediately rather than waiting for PersistentKeepalive.
+    ping -c 1 -W 1 "$PVP_GATEWAY" >/dev/null 2>&1 || true
+
+    for ((i = 0; i < attempts; i++)); do
+        if handshake_is_fresh "$peer"; then
+            return 0
+        fi
+
+        sleep 1
+        ping -c 1 -W 1 "$PVP_GATEWAY" >/dev/null 2>&1 || true
+    done
+
+    return 1
+}
+
+remove_bypass_rule() {
+    local server_ip="${1:-}"
+
+    [[ -n "$server_ip" ]] || return 0
+
+    sudo ip rule del \
+        priority "$BYPASS_RULE_PRIORITY" \
+        to "$server_ip/32" \
+        table main \
+        2>/dev/null || true
+}
+
+add_bypass_rule() {
+    local server_ip="$1"
+
+    remove_bypass_rule "$server_ip"
+
+    # wstunnel is the outer TCP connection. Keep Heighliner's public IP on the
+    # ordinary network path so the WSS transport never routes into wg-pvp.
+    sudo ip rule add \
+        priority "$BYPASS_RULE_PRIORITY" \
+        to "$server_ip/32" \
+        table main
+}
+
+stop_wstunnel() {
+    local pid=""
+
+    if [[ -f "$WSTUNNEL_PID_FILE" ]]; then
+        pid="$(<"$WSTUNNEL_PID_FILE")"
+    fi
+
+    if [[ "$pid" =~ ^[0-9]+$ ]] && kill -0 "$pid" 2>/dev/null; then
+        kill "$pid" 2>/dev/null || true
+
+        for _ in {1..20}; do
+            kill -0 "$pid" 2>/dev/null || break
+            sleep 0.1
+        done
+
+        kill -9 "$pid" 2>/dev/null || true
+    fi
+
+    rm -f "$WSTUNNEL_PID_FILE"
+}
+
+start_wstunnel() {
+    local server_ip="$1"
+    local pid
+
+    if ! command -v wstunnel >/dev/null 2>&1; then
+        echo "✗ Native PVP failed and wstunnel is not installed."
+        echo "  Install the erebe/wstunnel client before using the TCP/443 fallback."
+        return 1
+    fi
+
+    stop_wstunnel
+    : >"$WSTUNNEL_LOG"
+
+    # Connect to the already-resolved Heighliner IP so fallback startup does
+    # not depend on DNS after wg-pvp's full-tunnel policy is active.
+    #
+    # Caddy owns public TCP/443 and presents the real vpn.wormlogic.com TLS
+    # certificate. SNI + Host select that Caddy vhost; certificate verification
+    # is explicitly enabled.
+    nohup wstunnel client \
+        --log-lvl WARN \
+        --tls-sni-override "$PVP_HOST" \
+        --tls-verify-certificate \
+        -H "Host: $PVP_HOST" \
+        -L "udp://127.0.0.1:${PVP_WSTUNNEL_LOCAL_PORT}:127.0.0.1:${PVP_NATIVE_PORT}?timeout_sec=0" \
+        "wss://${server_ip}:443" \
+        >"$WSTUNNEL_LOG" 2>&1 &
+
+    pid=$!
+    printf '%s\n' "$pid" >"$WSTUNNEL_PID_FILE"
+
+    sleep 1
+
+    if ! kill -0 "$pid" 2>/dev/null; then
+        echo "✗ wstunnel exited during startup."
+        echo "  Log: $WSTUNNEL_LOG"
+        return 1
+    fi
+}
+
+record_transport() {
+    printf '%s\n' "$1" >"$TRANSPORT_FILE"
+}
+
+cleanup_failed_start() {
+    local server_ip="${1:-}"
+
+    sudo systemctl stop "$SERVICE" 2>/dev/null || true
+    stop_wstunnel
+    remove_bypass_rule "$server_ip"
+    rm -f "$TRANSPORT_FILE" "$SERVER_IP_FILE"
+}
+
+server_ip="$(resolve_server_ip || true)"
+
+if [[ -z "$server_ip" ]]; then
+    echo "✗ Could not resolve $PVP_HOST before starting the full tunnel."
+    echo "  Complete any captive-portal login first, then try again."
+    exit 1
+fi
+
+printf '%s\n' "$server_ip" >"$SERVER_IP_FILE"
+
+# Start from a clean helper state. Runtime endpoint changes disappear when
+# wg-quick is stopped, so wg-pvp.conf remains authoritative.
+stop_wstunnel
+remove_bypass_rule "$server_ip"
+rm -f "$TRANSPORT_FILE"
+
+if ! systemctl is-active --quiet "$SERVICE"; then
+    echo "• Starting PVP..."
+    sudo systemctl start "$SERVICE"
+fi
+
+peer="$(get_peer)"
+
+if [[ -z "$peer" ]]; then
+    echo "✗ No peer found on $INTERFACE."
+    cleanup_failed_start "$server_ip"
+    exit 1
+fi
+
+# --------------------------------------------------
+# 1. Native WireGuard UDP/51821
+# --------------------------------------------------
+echo "• Trying PVP over native WireGuard UDP/$PVP_NATIVE_PORT..."
+
+sudo wg set "$INTERFACE" peer "$peer" endpoint "$server_ip:$PVP_NATIVE_PORT"
+
+if probe_tunnel "$peer" 5; then
+    record_transport "native-udp-$PVP_NATIVE_PORT"
+    echo "✓ PVP active over native WireGuard UDP/$PVP_NATIVE_PORT"
+    exit 0
+fi
+
+# --------------------------------------------------
+# 2. WireGuard UDP carried through Caddy + WSS/TCP/443
+# --------------------------------------------------
+echo "• Native UDP/$PVP_NATIVE_PORT failed; trying WSS/TCP/443 via Caddy..."
+
+# The outer TCP connection must bypass wg-pvp before wstunnel starts.
+add_bypass_rule "$server_ip"
+
+if ! start_wstunnel "$server_ip"; then
+    cleanup_failed_start "$server_ip"
+    exit 1
+fi
+
+# Extra encapsulation needs a smaller MTU to avoid fragmentation.
+sudo ip link set dev "$INTERFACE" mtu 1300
+
+# WireGuard now sends its UDP packets to the local wstunnel listener.
+sudo wg set \
+    "$INTERFACE" \
+    peer "$peer" \
+    endpoint "127.0.0.1:$PVP_WSTUNNEL_LOCAL_PORT"
+
+if probe_tunnel "$peer" 8; then
+    record_transport "wss-tcp-443-caddy"
+    echo "✓ PVP active over WireGuard → Caddy/WSS/TCP/443"
+    exit 0
+fi
+
+echo "✗ PVP failed over native UDP/$PVP_NATIVE_PORT and Caddy/WSS/TCP/443."
+echo "  wstunnel log: $WSTUNNEL_LOG"
+cleanup_failed_start "$server_ip"
+exit 1
