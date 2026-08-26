@@ -1,0 +1,11 @@
+[Unit]
+Description=Automatically select Wormlogic or PVP VPN for the current network
+
+[Service]
+Type=oneshot
+# Coalesce short link/address/route bursts while changing networks.
+ExecStartPre=/usr/bin/sleep 2
+ExecStart=%h/.local/bin/vpn-auto
+
+[Install]
+WantedBy=default.target

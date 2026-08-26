@@ -1168,6 +1168,30 @@ setup_pvp_vpn() {
 }
 
 # --------------------------------------------------
+# Configure automatic VPN selection
+# - home networks: disable both tunnels
+# - trusted networks: enable Wormlogic split tunnel
+# - unknown networks: enable PVP privacy tunnel
+# - setup is idempotent and manages the user services,
+#   trust registry, and required privileged integration
+# --------------------------------------------------
+setup_vpn_automation() {
+  local setup_script="$REPO_ROOT/system/$EXPECTED_MACHINE/$EXPECTED_OS/vpn-auto/setup.sh"
+
+  echo "🔐 Configuring automatic VPN selection..."
+
+  if [[ ! -x "$setup_script" ]]; then
+    echo "⚠ VPN automation setup not found or not executable:"
+    echo "  $setup_script"
+    return 0
+  fi
+
+  "$setup_script"
+
+  echo "✓ Automatic VPN selection configured"
+}
+
+# --------------------------------------------------
 # Prepare shell dotfiles for stow
 # - back up regular files
 # - leave symlinks alone
@@ -1343,6 +1367,7 @@ main() {
   setup_timeshift_snapshot
   setup_wormlogic_vpn
   setup_pvp_vpn
+  setup_vpn_automation
   prepare_shell_dotfiles
   apply_general_dotfiles
   apply_host_environment

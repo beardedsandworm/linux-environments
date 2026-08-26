@@ -1,0 +1,124 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+CONFIG_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/wormlogic-vpn"
+TRUSTED_FILE="$CONFIG_DIR/trusted-networks"
+HOME_FILE="$CONFIG_DIR/home-networks"
+LIB="$HOME/.local/lib/wormlogic-vpn/network.sh"
+
+VPN_UP="$HOME/.local/bin/vpn-up"
+VPN_DOWN="$HOME/.local/bin/vpn-down"
+PVP_UP="$HOME/.local/bin/pvp-up"
+PVP_DOWN="$HOME/.local/bin/pvp-down"
+VPN_SERVICE="wg-quick@wormlogic.service"
+PVP_SERVICE="wg-quick@wg-pvp.service"
+
+[[ -r "$LIB" ]] || { echo "✗ Missing network helper: $LIB" >&2; exit 1; }
+# shellcheck source=/dev/null
+source "$LIB"
+
+notify() {
+    local urgency="$1" title="$2" body="$3" timeout
+
+    case "$urgency" in
+        critical) timeout=0 ;;
+        *)        timeout=6000 ;;
+    esac
+
+    if command -v notify-send >/dev/null 2>&1; then
+        notify-send \
+            --app-name="Wormlogic VPN" \
+            --urgency="$urgency" \
+            --expire-time="$timeout" \
+            "$title" \
+            "$body" || true
+    fi
+}
+
+notify_failure() {
+    notify critical "🚨 VPN AUTOMATION FAILED" "$1"
+}
+
+service_active() { systemctl is-active --quiet "$1"; }
+run_action() { local description="$1" command="$2"; echo "• $description"; "$command"; }
+
+for command_script in "$VPN_UP" "$VPN_DOWN" "$PVP_UP" "$PVP_DOWN"; do
+    [[ -x "$command_script" ]] || { echo "✗ Required VPN command missing: $command_script" >&2; exit 1; }
+done
+
+mkdir -p "$CONFIG_DIR"
+touch "$TRUSTED_FILE" "$HOME_FILE"
+changed=0
+
+if ! network="$(vpn_current_network)"; then
+    # If a default route exists but we cannot fingerprint it (normally an
+    # Ethernet gateway whose neighbour entry is not ready yet), fail safe to PVP.
+    if vpn_default_route >/dev/null 2>&1; then
+        echo "• Active network could not be fingerprinted; treating it as untrusted."
+        classification="untrusted"
+        identity="unidentified"
+        name="Unidentified network"
+        dev="unknown"
+    else
+        echo "• No active default network; ensuring VPN tunnels are down."
+        if service_active "$PVP_SERVICE"; then
+            run_action "Stopping PVP" "$PVP_DOWN" || { notify_failure "No active network connection."$'\n'"Could not stop PVP."; exit 1; }
+            changed=1
+        fi
+        if service_active "$VPN_SERVICE"; then
+            run_action "Stopping Wormlogic VPN" "$VPN_DOWN" || { notify_failure "No active network connection."$'\n'"Could not stop Wormlogic VPN."; exit 1; }
+            changed=1
+        fi
+        (( changed )) && notify normal "📴 VPN Automation" "No active network connection."$'\n'"VPN tunnels disabled"
+        exit 0
+    fi
+else
+    IFS=$'\t' read -r identity name dev network_type <<<"$network"
+    printf '• Network: %s (%s, %s)\n' "$name" "$identity" "$dev"
+    if vpn_registry_contains "$HOME_FILE" "$identity"; then
+        classification="home"
+    elif vpn_registry_contains "$TRUSTED_FILE" "$identity"; then
+        classification="trusted"
+    else
+        classification="untrusted"
+    fi
+fi
+
+echo "• Classification: $classification"
+
+case "$classification" in
+    home)
+        if service_active "$PVP_SERVICE"; then
+            run_action "Stopping PVP" "$PVP_DOWN" || { notify_failure "Home network: $name"$'\n'"PVP could not be stopped."; exit 1; }
+            changed=1
+        fi
+        if service_active "$VPN_SERVICE"; then
+            run_action "Stopping Wormlogic VPN" "$VPN_DOWN" || { notify_failure "Home network: $name"$'\n'"Wormlogic VPN could not be stopped."; exit 1; }
+            changed=1
+        fi
+        (( changed )) && notify normal "🏠 VPN Automation" "Home network: $name"$'\n'"VPN tunnels disabled"
+        ;;
+    trusted)
+        if service_active "$PVP_SERVICE"; then
+            run_action "Stopping PVP" "$PVP_DOWN" || { notify_failure "Trusted network: $name"$'\n'"PVP could not be stopped."; exit 1; }
+            changed=1
+        fi
+        if ! service_active "$VPN_SERVICE"; then
+            run_action "Starting Wormlogic VPN" "$VPN_UP" || { notify_failure "Trusted network: $name"$'\n'"Wormlogic VPN could not connect."; exit 1; }
+            changed=1
+        fi
+        (( changed )) && notify normal "🔐 Wormlogic VPN" "Trusted network: $name"$'\n'"Wormlogic connected"
+        ;;
+    untrusted)
+        if service_active "$VPN_SERVICE"; then
+            run_action "Stopping Wormlogic VPN" "$VPN_DOWN" || { notify_failure "Untrusted network: $name"$'\n'"Wormlogic VPN could not be stopped."; exit 1; }
+            changed=1
+        fi
+        if ! service_active "$PVP_SERVICE"; then
+            echo "• Starting PVP"
+            "$PVP_UP" || { notify_failure "Untrusted network: $name"$'\n'"PVP could not establish a tunnel."; exit 1; }
+            changed=1
+        fi
+        (( changed )) && notify normal "🛡️ PVP Privacy VPN" "Untrusted network: $name"$'\n'"Privacy tunnel connected"
+        ;;
+esac

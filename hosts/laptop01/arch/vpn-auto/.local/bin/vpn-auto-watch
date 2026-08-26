@@ -1,0 +1,13 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+trigger() {
+    systemctl --user start --no-block wormlogic-vpn-auto.service >/dev/null 2>&1 || true
+}
+
+# Reconcile once when the watcher starts, then on link/address/route changes.
+trigger
+
+ip monitor link address route | while IFS= read -r _; do
+    trigger
+done

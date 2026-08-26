@@ -1,0 +1,33 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+CONFIG_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/wormlogic-vpn"
+TRUSTED_FILE="$CONFIG_DIR/trusted-networks"
+HOME_FILE="$CONFIG_DIR/home-networks"
+LIB="$HOME/.local/lib/wormlogic-vpn/network.sh"
+
+[[ -r "$LIB" ]] || { echo "✗ Missing network helper: $LIB" >&2; exit 1; }
+# shellcheck source=/dev/null
+source "$LIB"
+
+mkdir -p "$CONFIG_DIR"
+touch "$TRUSTED_FILE" "$HOME_FILE"
+
+if ! network="$(vpn_current_network)"; then
+    echo "✗ Could not establish a stable identity for the current network." >&2
+    echo "  Wi-Fi requires an active iwd station; Ethernet requires the default gateway MAC in the neighbour table." >&2
+    exit 1
+fi
+IFS=$'\t' read -r identity display dev network_type <<<"$network"
+
+vpn_registry_remove "$TRUSTED_FILE" "$identity"
+vpn_registry_remove "$HOME_FILE" "$identity"
+
+printf '✓ Network trust revoked\n'
+
+printf '  Network: %s\n' "$display"
+printf '  Identity: %s\n' "$identity"
+printf '  Device: %s\n' "$dev"
+printf '  Classification: untrusted\n'
+
+systemctl --user start wormlogic-vpn-auto.service

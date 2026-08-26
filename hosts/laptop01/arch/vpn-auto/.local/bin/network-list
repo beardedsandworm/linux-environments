@@ -1,0 +1,33 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+CONFIG_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/wormlogic-vpn"
+TRUSTED_FILE="$CONFIG_DIR/trusted-networks"
+HOME_FILE="$CONFIG_DIR/home-networks"
+LIB="$HOME/.local/lib/wormlogic-vpn/network.sh"
+
+[[ -r "$LIB" ]] || { echo "✗ Missing network helper: $LIB" >&2; exit 1; }
+# shellcheck source=/dev/null
+source "$LIB"
+
+current_identity=""; current_name=""
+if current="$(vpn_current_network 2>/dev/null)"; then
+    IFS=$'\t' read -r current_identity current_name _ _ <<<"$current"
+fi
+
+print_file() {
+    local class="$1" file="$2" identity label
+    [[ -f "$file" ]] || return 0
+    while IFS= read -r identity; do
+        [[ -n "$identity" ]] || continue
+        [[ "$identity" =~ ^[[:space:]]*# ]] && continue
+        label=""
+        [[ "$identity" == "$current_identity" ]] && label="$current_name [current]"
+        printf '%-9s %-73s %s\n' "$class" "$identity" "$label"
+    done <"$file"
+}
+
+printf '%-9s %-73s %s\n' "CLASS" "IDENTITY" "NETWORK"
+printf '%-9s %-73s %s\n' "---------" "-------------------------------------------------------------------------" "------------------------------"
+print_file home "$HOME_FILE"
+print_file trusted "$TRUSTED_FILE"

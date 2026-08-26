@@ -1,0 +1,12 @@
+[Unit]
+Description=Watch network changes for Wormlogic VPN automation
+After=default.target
+
+[Service]
+Type=simple
+ExecStart=%h/.local/bin/vpn-auto-watch
+Restart=always
+RestartSec=2
+
+[Install]
+WantedBy=default.target
