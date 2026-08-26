@@ -14,10 +14,12 @@ docker-buildx-plugin
 docker-ce
 docker-ce-cli
 docker-compose-plugin
+dropbear-initramfs
 efibootmgr
 findutils
 git-lfs
 gnupg
+gnupg2
 grep
 grub-efi-amd64
 grub-efi-amd64-signed
@@ -25,6 +27,7 @@ gzip
 hostname
 init
 linux-generic
+linux-modules-nvidia-595-open-generic
 lm-sensors
 login
 nala
@@ -33,6 +36,8 @@ ncurses-base
 ncurses-bin
 neovim
 nmap
+nvidia-container-toolkit
+nvidia-driver-595-open
 nvme-cli
 openssh-server
 pkg-config
