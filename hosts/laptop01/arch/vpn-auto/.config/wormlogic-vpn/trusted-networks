@@ -1,2 +1,3 @@
 # Stable network fingerprints trusted for direct Internet use.
 # Managed with network-trust / network-revoke.
+ethernet:4f0082b0435c4b5e211facdfd70483e0e5f430beb7741472998ab37d0aefc72e

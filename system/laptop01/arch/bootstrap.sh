@@ -459,20 +459,19 @@ has_local_ssh_credentials() {
     -print -quit 2>/dev/null | grep -q .
 }
 
-ensure_local_ssh_credentials() {
-  local ssh_dir="$HOME/.ssh"
-  local key_file="$ssh_dir/id_ed25519"
+ensure_ed25519_identity() {
+  local key_file="$1"
+  local comment="$2"
   local pub_file="${key_file}.pub"
 
-  mkdir -p "$ssh_dir"
-  chmod 700 "$ssh_dir"
+  mkdir -p "$(dirname "$key_file")"
 
   if [[ ! -f "$key_file" ]]; then
-    echo "• Generating missing user SSH identity..."
+    echo "• Generating SSH identity: $(basename "$key_file")"
     ssh-keygen -t ed25519 \
       -f "$key_file" \
       -N "" \
-      -C "$EXPECTED_MACHINE-$(hostname)"
+      -C "$comment"
   fi
 
   chmod 600 "$key_file"
@@ -481,7 +480,31 @@ ensure_local_ssh_credentials() {
     ssh-keygen -y -f "$key_file" > "$pub_file"
   fi
   chmod 644 "$pub_file"
+}
 
+ensure_local_ssh_credentials() {
+  local ssh_dir="$HOME/.ssh"
+  local device_key="$ssh_dir/id_ed25519"
+  local repo_key="$ssh_dir/id_ed25519_git_linux-environments"
+
+  mkdir -p "$ssh_dir"
+  chmod 700 "$ssh_dir"
+
+  # Preserve laptop01's existing general-purpose client identity. During this
+  # migration id_ed25519 becomes the device identity used for interactive SSH
+  # access to lab systems and may remain registered as a GitHub account key.
+  ensure_ed25519_identity \
+    "$device_key" \
+    "$EXPECTED_MACHINE:device"
+
+  # linux-environments gets its own GitHub deploy identity. It is captured by
+  # the normal SSH recovery helpers alongside the device identity, but should
+  # not be reused by other repositories.
+  ensure_ed25519_identity \
+    "$repo_key" \
+    "$EXPECTED_MACHINE:github:linux-environments"
+
+  # SSH server host identities remain separate from user/client identities.
   sudo ssh-keygen -A
 }
 
@@ -509,25 +532,76 @@ reconcile_ssh_credentials() {
     choose_authoritative_source "SSH"
 
     if [[ "$AUTHORITATIVE_SOURCE" == "local" ]]; then
-      ensure_local_ssh_credentials
+      echo "• Local SSH credentials selected as authoritative"
       bash "$capture_script" --force
     else
+      echo "• Repository SSH credentials selected as authoritative"
       bash "$restore_script" --force
     fi
   elif (( local_exists )); then
     echo "✓ Local SSH credentials found; no repository copy exists"
-    ensure_local_ssh_credentials
-    bash "$capture_script"
   elif (( repo_exists )); then
     echo "✓ Repository SSH credentials found; restoring them"
     bash "$restore_script" --force
   else
-    echo "• No local or repository SSH credentials found; generating them..."
-    ensure_local_ssh_credentials
-    bash "$capture_script"
+    echo "• No local or repository SSH credentials found"
   fi
 
+  # Reconciliation restores/preserves whatever already exists. Then ensure the
+  # identities required by the current bootstrap exist. This makes adding a new
+  # purpose-built identity migration-safe on both existing and rebuilt hosts.
+  ensure_local_ssh_credentials
+
+  # Capture again so any identity introduced by today's bootstrap immediately
+  # becomes part of this machine's encrypted SSH recovery state.
+  bash "$capture_script"
+
   echo "✓ SSH credentials ready"
+}
+
+# --------------------------------------------------
+# Pin linux-environments to its repository-specific SSH deploy identity
+# - converts a GitHub HTTPS origin to SSH when necessary
+# - core.sshCommand is local to this checkout; other repos are unaffected
+# --------------------------------------------------
+configure_linux_environments_git_identity() {
+  local key_file="$HOME/.ssh/id_ed25519_git_linux-environments"
+  local origin
+
+  echo "🔐 Configuring linux-environments Git SSH identity..."
+
+  if [[ ! -d "$REPO_ROOT/.git" ]]; then
+    echo "✗ Repository root is not a Git checkout: $REPO_ROOT"
+    exit 1
+  fi
+
+  if [[ ! -f "$key_file" ]]; then
+    echo "✗ linux-environments deploy key is missing: $key_file"
+    exit 1
+  fi
+
+  origin="$(git -C "$REPO_ROOT" remote get-url origin 2>/dev/null || true)"
+
+  if [[ "$origin" =~ ^https://github\.com/(.+)$ ]]; then
+    git -C "$REPO_ROOT" remote set-url origin \
+      "git@github.com:${BASH_REMATCH[1]}"
+    origin="$(git -C "$REPO_ROOT" remote get-url origin)"
+    echo "✓ Converted linux-environments origin from HTTPS to SSH"
+  fi
+
+  if [[ "$origin" != git@github.com:* && "$origin" != ssh://git@github.com/* ]]; then
+    echo "⚠ linux-environments origin is not a recognized GitHub SSH URL:"
+    echo "  ${origin:-unset}"
+    echo "  Leaving the remote unchanged; the repo-local SSH identity is still configured."
+  fi
+
+  git -C "$REPO_ROOT" config --local core.sshCommand \
+    "ssh -i $key_file -o IdentitiesOnly=yes"
+
+  LINUX_ENVIRONMENTS_GIT_ORIGIN="$origin"
+  LINUX_ENVIRONMENTS_DEPLOY_KEY="$key_file"
+
+  echo "✓ linux-environments pinned to its dedicated SSH identity"
 }
 
 # --------------------------------------------------
@@ -828,6 +902,40 @@ read_wireguard_private_key() {
   ' "$config_file" | tr -d '[:space:]'
 }
 
+read_wireguard_interface_address() {
+  local config_file="$1"
+
+  awk '
+    /^\[Interface\][[:space:]]*$/ { in_interface=1; next }
+    /^\[/ { in_interface=0 }
+    in_interface && /^[[:space:]]*Address[[:space:]]*=/ {
+      pos=index($0, "=")
+      value=substr($0, pos + 1)
+      sub(/^[[:space:]]*/, "", value)
+      sub(/[[:space:]]*$/, "", value)
+      print value
+      exit
+    }
+  ' "$config_file"
+}
+
+read_wireguard_peer_public_key() {
+  local config_file="$1"
+
+  awk '
+    /^\[Peer\][[:space:]]*$/ { in_peer=1; next }
+    /^\[/ { in_peer=0 }
+    in_peer && /^[[:space:]]*PublicKey[[:space:]]*=/ {
+      pos=index($0, "=")
+      value=substr($0, pos + 1)
+      sub(/^[[:space:]]*/, "", value)
+      sub(/[[:space:]]*$/, "", value)
+      print value
+      exit
+    }
+  ' "$config_file" | tr -d '[:space:]'
+}
+
 setup_wormlogic_vpn() {
   local vpn_name="wormlogic"
   local vps_host="vpn.wormlogic.com"
@@ -837,20 +945,16 @@ setup_wormlogic_vpn() {
   local default_vpn_ip="10.8.0.10/32"
 
   local machine_id
-  local local_dir
   local credential_dir
   local staged_conf
   local staged_public
-  local local_public_file
-  local source_conf
   local target_conf
-  local settings_file
-  local server_pubkey_file
   local capture_script
   local restore_script
 
   local client_private_key
   local client_vpn_ip
+  local recovered_vpn_ip
   local vps_public_key
   local input_vpn_ip
 
@@ -858,26 +962,24 @@ setup_wormlogic_vpn() {
 
   machine_id="$(tr -d '\r\n' < "$MACHINE_ID_FILE")"
 
-  local_dir="$REPO_ROOT/local/wireguard"
   credential_dir="${XDG_CONFIG_HOME:-$HOME/.config}/dotfiles/wireguard"
   staged_conf="$credential_dir/${vpn_name}.conf"
   staged_public="$credential_dir/${vpn_name}.public-key"
-  local_public_file="$local_dir/${machine_id}.pub"
-  source_conf="$local_dir/$vpn_name.conf"
   target_conf="/etc/wireguard/$vpn_name.conf"
-  settings_file="$local_dir/$vpn_name.env"
-  server_pubkey_file="$REPO_ROOT/shared/wireguard/wormlogic-server.pub"
   capture_script="$REPO_ROOT/scripts/capture-wireguard-credentials.sh"
   restore_script="$REPO_ROOT/scripts/restore-wireguard-credentials.sh"
 
   require_credential_script "$capture_script"
   require_credential_script "$restore_script"
 
-  mkdir -p "$local_dir" "$credential_dir" "$(dirname "$server_pubkey_file")"
-  chmod 700 "$REPO_ROOT/local" "$local_dir" "$credential_dir"
+  mkdir -p "$credential_dir"
+  chmod 700 "$credential_dir"
 
   if [[ -f "$staged_conf" ]]; then
     client_private_key="$(read_wireguard_private_key "$staged_conf")"
+    vps_public_key="$(read_wireguard_peer_public_key "$staged_conf")"
+    recovered_vpn_ip="$(read_wireguard_interface_address "$staged_conf")"
+
     if [[ -z "$client_private_key" ]]; then
       echo "✗ Recovered WireGuard config has no PrivateKey: $staged_conf"
       exit 1
@@ -895,15 +997,6 @@ setup_wormlogic_vpn() {
     exit 1
   fi
 
-  if [[ -f "$settings_file" ]]; then
-    # shellcheck disable=SC1090
-    source "$settings_file"
-  fi
-
-  if [[ -f "$server_pubkey_file" ]]; then
-    vps_public_key="$(tr -d '[:space:]' < "$server_pubkey_file")"
-  fi
-
   if [[ -z "${vps_public_key:-}" ]]; then
     echo
     echo "Missing Wormlogic VPS WireGuard public key."
@@ -916,12 +1009,6 @@ setup_wormlogic_vpn() {
       echo "✗ VPS public key cannot be empty"
       exit 1
     fi
-
-    printf '%s\n' "$vps_public_key" > "$server_pubkey_file"
-    chmod 644 "$server_pubkey_file"
-
-    echo "✓ Saved VPS public key to $server_pubkey_file"
-    echo "  Commit this file so future bootstraps do not prompt again."
   fi
 
   if ! printf '%s\n' "$vps_public_key" | wg pubkey >/dev/null 2>&1; then
@@ -930,9 +1017,13 @@ setup_wormlogic_vpn() {
   fi
 
   if [[ -z "${WORMLOGIC_VPN_IP:-}" ]]; then
-    echo
-    read -r -p "Laptop VPN IP [$default_vpn_ip]: " input_vpn_ip
-    WORMLOGIC_VPN_IP="${input_vpn_ip:-$default_vpn_ip}"
+    if [[ -n "${recovered_vpn_ip:-}" ]]; then
+      WORMLOGIC_VPN_IP="$recovered_vpn_ip"
+    else
+      echo
+      read -r -p "Laptop VPN IP [$default_vpn_ip]: " input_vpn_ip
+      WORMLOGIC_VPN_IP="${input_vpn_ip:-$default_vpn_ip}"
+    fi
   fi
 
   client_vpn_ip="$WORMLOGIC_VPN_IP"
@@ -942,35 +1033,23 @@ setup_wormlogic_vpn() {
     exit 1
   fi
 
-  {
-    echo "WORMLOGIC_VPN_IP='$client_vpn_ip'"
-    echo "WORMLOGIC_ALLOWED_IPS='$vpn_allowed_ips'"
-    echo "WORMLOGIC_DNS_SERVER='$vpn_dns_server'"
-    echo "WORMLOGIC_DNS_DOMAIN='$vpn_dns_domain'"
-  } > "$settings_file"
-  chmod 600 "$settings_file"
-
-  echo "• Writing local WireGuard config: $source_conf"
-  {
-    echo "[Interface]"
-    echo "PrivateKey = $client_private_key"
-    echo "Address = $client_vpn_ip"
-    echo
-    echo "[Peer]"
-    echo "PublicKey = $vps_public_key"
-    echo "Endpoint = $vps_host:51820"
-    echo "AllowedIPs = $vpn_allowed_ips"
-    echo "PersistentKeepalive = 25"
-  } > "$source_conf"
-  chmod 600 "$source_conf"
-
   echo "• Installing WireGuard config: $target_conf"
   sudo install -d -m 700 /etc/wireguard
-  sudo install -m 600 "$source_conf" "$target_conf"
+  sudo install -m 600 /dev/null "$target_conf"
+  sudo tee "$target_conf" >/dev/null <<EOF
+[Interface]
+PrivateKey = $client_private_key
+Address = $client_vpn_ip
 
-  # The final live config contains the selected identity plus today's
-  # authoritative routing/peer settings. Capture that complete file, then
-  # refresh staging and derive the public key via the restore helper.
+[Peer]
+PublicKey = $vps_public_key
+Endpoint = $vps_host:51820
+AllowedIPs = $vpn_allowed_ips
+PersistentKeepalive = 25
+EOF
+
+  # The complete live config is the authoritative recoverable artifact.
+  # Capture it encrypted into the repository, then refresh local staging.
   bash "$capture_script" --force
   bash "$restore_script" --force
 
@@ -979,8 +1058,6 @@ setup_wormlogic_vpn() {
     echo "  $staged_public"
     exit 1
   fi
-
-  install -m 0644 "$staged_public" "$local_public_file"
 
   sudo systemctl enable --now "wg-quick@$vpn_name"
 
@@ -1000,7 +1077,7 @@ setup_wormlogic_vpn() {
 # --------------------------------------------------
 # Setup PVP WireGuard client
 # - full-tunnel privacy path through Heighliner -> Proton
-# - consumes recovered wg-pvp.conf as the identity source when available
+# - consumes recovered wg-pvp.conf as identity + peer authority when available
 # - captures the final full config into the normal WireGuard recovery set
 # - installs the wg-quick configuration but leaves the service disabled
 # --------------------------------------------------
@@ -1011,20 +1088,16 @@ setup_pvp_vpn() {
   local default_vpn_ip="10.9.0.10/32"
 
   local machine_id
-  local local_dir
   local credential_dir
   local staged_conf
   local staged_public
-  local local_public_file
-  local source_conf
   local target_conf
-  local settings_file
-  local server_pubkey_file
   local capture_script
   local restore_script
 
   local client_private_key
   local client_vpn_ip
+  local recovered_vpn_ip
   local vps_public_key
   local input_vpn_ip
 
@@ -1032,26 +1105,24 @@ setup_pvp_vpn() {
 
   machine_id="$(tr -d '\r\n' < "$MACHINE_ID_FILE")"
 
-  local_dir="$REPO_ROOT/local/wireguard"
   credential_dir="${XDG_CONFIG_HOME:-$HOME/.config}/dotfiles/wireguard"
   staged_conf="$credential_dir/${vpn_name}.conf"
   staged_public="$credential_dir/${vpn_name}.public-key"
-  local_public_file="$local_dir/${machine_id}-pvp.pub"
-  source_conf="$local_dir/${vpn_name}.conf"
   target_conf="/etc/wireguard/${vpn_name}.conf"
-  settings_file="$local_dir/${vpn_name}.env"
-  server_pubkey_file="$REPO_ROOT/system/vps01/ubuntu/pvp/heighliner.pub"
   capture_script="$REPO_ROOT/scripts/capture-wireguard-credentials.sh"
   restore_script="$REPO_ROOT/scripts/restore-wireguard-credentials.sh"
 
   require_credential_script "$capture_script"
   require_credential_script "$restore_script"
 
-  mkdir -p "$local_dir" "$credential_dir" "$(dirname "$server_pubkey_file")"
-  chmod 700 "$REPO_ROOT/local" "$local_dir" "$credential_dir"
+  mkdir -p "$credential_dir"
+  chmod 700 "$credential_dir"
 
   if [[ -f "$staged_conf" ]]; then
     client_private_key="$(read_wireguard_private_key "$staged_conf")"
+    vps_public_key="$(read_wireguard_peer_public_key "$staged_conf")"
+    recovered_vpn_ip="$(read_wireguard_interface_address "$staged_conf")"
+
     if [[ -z "$client_private_key" ]]; then
       echo "✗ Recovered PVP WireGuard config has no PrivateKey: $staged_conf"
       exit 1
@@ -1066,15 +1137,6 @@ setup_pvp_vpn() {
     exit 1
   fi
 
-  if [[ -f "$settings_file" ]]; then
-    # shellcheck disable=SC1090
-    source "$settings_file"
-  fi
-
-  if [[ -f "$server_pubkey_file" ]]; then
-    vps_public_key="$(tr -d '[:space:]' < "$server_pubkey_file")"
-  fi
-
   if [[ -z "${vps_public_key:-}" ]]; then
     echo
     echo "Missing Heighliner PVP WireGuard public key."
@@ -1087,12 +1149,6 @@ setup_pvp_vpn() {
       echo "✗ Heighliner PVP public key cannot be empty"
       exit 1
     fi
-
-    printf '%s\n' "$vps_public_key" > "$server_pubkey_file"
-    chmod 644 "$server_pubkey_file"
-
-    echo "✓ Saved Heighliner PVP public key to $server_pubkey_file"
-    echo "  Commit this file so future bootstraps do not prompt again."
   fi
 
   if ! printf '%s\n' "$vps_public_key" | wg pubkey >/dev/null 2>&1; then
@@ -1101,9 +1157,13 @@ setup_pvp_vpn() {
   fi
 
   if [[ -z "${PVP_VPN_IP:-}" ]]; then
-    echo
-    read -r -p "Laptop PVP IP [$default_vpn_ip]: " input_vpn_ip
-    PVP_VPN_IP="${input_vpn_ip:-$default_vpn_ip}"
+    if [[ -n "${recovered_vpn_ip:-}" ]]; then
+      PVP_VPN_IP="$recovered_vpn_ip"
+    else
+      echo
+      read -r -p "Laptop PVP IP [$default_vpn_ip]: " input_vpn_ip
+      PVP_VPN_IP="${input_vpn_ip:-$default_vpn_ip}"
+    fi
   fi
 
   client_vpn_ip="$PVP_VPN_IP"
@@ -1113,32 +1173,23 @@ setup_pvp_vpn() {
     exit 1
   fi
 
-  {
-    echo "PVP_VPN_IP='$client_vpn_ip'"
-    echo "PVP_ALLOWED_IPS='$vpn_allowed_ips'"
-  } > "$settings_file"
-  chmod 600 "$settings_file"
-
-  echo "• Writing local PVP WireGuard config: $source_conf"
-  {
-    echo "[Interface]"
-    echo "PrivateKey = $client_private_key"
-    echo "Address = $client_vpn_ip"
-    echo
-    echo "[Peer]"
-    echo "PublicKey = $vps_public_key"
-    echo "Endpoint = $vps_host:51821"
-    echo "AllowedIPs = $vpn_allowed_ips"
-    echo "PersistentKeepalive = 25"
-  } > "$source_conf"
-  chmod 600 "$source_conf"
-
   echo "• Installing PVP WireGuard config: $target_conf"
   sudo install -d -m 700 /etc/wireguard
-  sudo install -m 600 "$source_conf" "$target_conf"
+  sudo install -m 600 /dev/null "$target_conf"
+  sudo tee "$target_conf" >/dev/null <<EOF
+[Interface]
+PrivateKey = $client_private_key
+Address = $client_vpn_ip
 
-  # Capture the completed PVP config together with the machine's other
-  # WireGuard configs, then refresh staging and derive the public key.
+[Peer]
+PublicKey = $vps_public_key
+Endpoint = $vps_host:51821
+AllowedIPs = $vpn_allowed_ips
+PersistentKeepalive = 25
+EOF
+
+  # Capture the complete live config into encrypted recovery state, then refresh
+  # local staging and derive the public key used by the bootstrap summary.
   bash "$capture_script" --force
   bash "$restore_script" --force
 
@@ -1147,8 +1198,6 @@ setup_pvp_vpn() {
     echo "  $staged_public"
     exit 1
   fi
-
-  install -m 0644 "$staged_public" "$local_public_file"
 
   # PVP is intentionally opt-in. The wg-quick unit remains available for the
   # pvp-up/pvp-down/pvp-toggle helpers, but it must not start automatically.
@@ -1283,6 +1332,40 @@ show_summary() {
   echo "Local IP:"
   echo "  $local_ip"
   echo
+
+  echo "SSH identities:"
+  echo
+
+  if [[ -f "$HOME/.ssh/id_ed25519.pub" ]]; then
+    echo "  Device / lab client identity:"
+    echo "  ----------------------------------------"
+    sed 's/^/  /' "$HOME/.ssh/id_ed25519.pub"
+    echo
+    echo "  GitHub use: account SSH key for laptop01"
+  else
+    echo "  Device / lab client identity: unavailable"
+  fi
+  echo
+
+  if [[ -f "$HOME/.ssh/id_ed25519_git_linux-environments.pub" ]]; then
+    echo "  GitHub deploy key — linux-environments:"
+    echo "  ----------------------------------------"
+    sed 's/^/  /' "$HOME/.ssh/id_ed25519_git_linux-environments.pub"
+    echo
+    echo "  Add to: linux-environments → Settings → Deploy keys"
+    echo "  Title:  laptop01"
+    echo "  Access: enable write access"
+    echo "  Key:    use the public key above"
+  else
+    echo "  GitHub deploy key — linux-environments: unavailable"
+  fi
+  echo
+
+  echo "  Repo SSH configuration:"
+  echo "    Origin: ${LINUX_ENVIRONMENTS_GIT_ORIGIN:-$(git -C "$REPO_ROOT" remote get-url origin 2>/dev/null || echo unavailable)}"
+  echo "    Key:    ${LINUX_ENVIRONMENTS_DEPLOY_KEY:-$HOME/.ssh/id_ed25519_git_linux-environments}"
+  echo
+
   echo "SOPS age identity:"
   echo "  Public key: ${AGE_PUBLIC_KEY:-unavailable}"
   echo "  Recovery:   ${AGE_RECOVERY_FILE:-unavailable}"
@@ -1372,6 +1455,7 @@ main() {
   apply_general_dotfiles
   apply_host_environment
   run_package_export
+  configure_linux_environments_git_identity
   show_summary
 
   echo

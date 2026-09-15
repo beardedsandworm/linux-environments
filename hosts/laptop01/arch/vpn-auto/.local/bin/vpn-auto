@@ -69,7 +69,9 @@ if ! network="$(vpn_current_network)"; then
             run_action "Stopping Wormlogic VPN" "$VPN_DOWN" || { notify_failure "No active network connection."$'\n'"Could not stop Wormlogic VPN."; exit 1; }
             changed=1
         fi
-        (( changed )) && notify normal "📴 VPN Automation" "No active network connection."$'\n'"VPN tunnels disabled"
+        if (( changed )); then
+            notify normal "📴 VPN Automation" "No active network connection."$'\n'"VPN tunnels disabled"
+        fi
         exit 0
     fi
 else
@@ -96,7 +98,9 @@ case "$classification" in
             run_action "Stopping Wormlogic VPN" "$VPN_DOWN" || { notify_failure "Home network: $name"$'\n'"Wormlogic VPN could not be stopped."; exit 1; }
             changed=1
         fi
-        (( changed )) && notify normal "🏠 VPN Automation" "Home network: $name"$'\n'"VPN tunnels disabled"
+        if (( changed )); then
+            notify normal "🏠 VPN Automation" "Home network: $name"$'\n'"VPN tunnels disabled"
+        fi
         ;;
     trusted)
         if service_active "$PVP_SERVICE"; then
@@ -107,7 +111,9 @@ case "$classification" in
             run_action "Starting Wormlogic VPN" "$VPN_UP" || { notify_failure "Trusted network: $name"$'\n'"Wormlogic VPN could not connect."; exit 1; }
             changed=1
         fi
-        (( changed )) && notify normal "🔐 Wormlogic VPN" "Trusted network: $name"$'\n'"Wormlogic connected"
+        if (( changed )); then
+            notify normal "🔐 Wormlogic VPN" "Trusted network: $name"$'\n'"Wormlogic connected"
+        fi
         ;;
     untrusted)
         if service_active "$VPN_SERVICE"; then
@@ -119,6 +125,10 @@ case "$classification" in
             "$PVP_UP" || { notify_failure "Untrusted network: $name"$'\n'"PVP could not establish a tunnel."; exit 1; }
             changed=1
         fi
-        (( changed )) && notify normal "🛡️ PVP Privacy VPN" "Untrusted network: $name"$'\n'"Privacy tunnel connected"
+        if (( changed )); then
+            notify normal "🛡️ PVP Privacy VPN" "Untrusted network: $name"$'\n'"Privacy tunnel connected"
+        fi
         ;;
 esac
+
+exit 0
