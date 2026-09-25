@@ -939,8 +939,8 @@ read_wireguard_peer_public_key() {
 setup_wormlogic_vpn() {
   local vpn_name="wormlogic"
   local vps_host="vpn.wormlogic.com"
-  local vpn_allowed_ips="10.8.0.0/24, 10.42.42.0/24"
-  local vpn_dns_server="10.42.42.1"
+  local vpn_allowed_ips="10.8.0.0/24, 10.42.0.0/16"
+  local vpn_dns_server="10.42.20.10"
   local vpn_dns_domain="~wormlogic.com"
   local default_vpn_ip="10.8.0.10/32"
 

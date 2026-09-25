@@ -92,6 +92,7 @@ intel-ucode
 iwd
 jadx
 jdk17-openjdk
+jre8-openjdk
 keepassxc
 kicad
 kicad-library
