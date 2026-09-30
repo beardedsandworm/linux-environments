@@ -1,8 +1,21 @@
 # Monitoring Baseline
 
-**Repository:** `linux-environments`\
-**Scope:** Defines the current monitoring implementation, the desired
-operational model, and the implementation roadmap for host monitoring.
+**Repository:** `linux-environments`
+**Scope:** Verified monitoring observations followed by the historical host-monitoring baseline and design goals. Service-owned monitors remain authoritative in their own repositories.
+
+## Verified observations — 2026-09-28
+
+- IX runs `internal-dns-monitor.timer`; its sampled service execution returned `Result=success`, `ExecMainStatus=0`, with a healthy/sent journal result. Source authority is `llm-services/services/internal-dns-monitor`, not this host-bootstrap repository.
+- The IX monitor is configured for Pi-holes `10.42.20.10` and `.11`. Its `FRESH_RECURSION_SUFFIX` is empty, so its healthy result does not include the optional fresh-recursion diagnostic.
+- Heighliner runs the external DNS monitor owned by `vps-services/services/external-dns-monitor`. Its timer was active and its sampled execution succeeded.
+- The Heighliner n8n operations REST API returned workflow/execution data; sampled recent executions succeeded. This is not proof of Discord notification delivery. The separate agent-side n8n MCP OAuth connection required renewed authorization at assessment time.
+- Home Assistant exposes current Midway/Pi-hole telemetry. A restored/unavailable legacy `WG_GATEWAY` entity was also present; that entity alone does not establish a tunnel outage.
+- Beszel hub/agents were visible, but full authenticated hub administration, application backup coverage and restore success were not validated.
+- Shai-Hulud, Chapterhouse and Caladan are planned, not deployed: their future addresses are not monitoring availability targets yet. Current network topology is in [NETWORK.md](NETWORK.md).
+
+## Historical baseline and design goals
+
+The sections below record the earlier monitoring baseline and its proposed direction. Claims labelled "Verified", "Current State" or "Current Limitations" within that historical material were not all revalidated in this assessment. In particular, do not infer present notification noise, universal package-update behavior, or the absence of DNS monitoring from the older text.
 
 ## Purpose
 

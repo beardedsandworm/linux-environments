@@ -1,10 +1,21 @@
 # Operational Baseline
 
-**Repository:** `linux-environments`\
-**Scope:** This document applies only to the `linux-environments`
-repository. It records the verified operational state, identified
-configuration drift, and the desired future state of the repository and
-the systems it provisions.
+**Repository:** `linux-environments`
+**Scope:** Current verified corrections followed by an explicitly historical baseline. Live configuration and the linked network document take precedence over the older observations below.
+
+## Current verified corrections — 2026-09-28
+
+- Midway is the home router, firewall, DHCP and Unbound authority. Arrakis (`server01`) is a service host and WireGuard peer, not the LAN gateway.
+- The home network is segmented into nine VLANs. `10.42.42.0/24` is TRUSTED, not the entire LAN. Current VLANs, DNS and address/status distinctions are in [NETWORK.md](NETWORK.md).
+- Administrative VPN identities verified in this assessment are Heighliner `10.8.0.1`, Midway `.2`, Arrakis `.3` and IX `.4`.
+- SSH to Heighliner, Midway, Arrakis, IX and Pi-hole 1 succeeded using existing key identities. This is not a revalidation of every laptop's VPN provisioning or access from every client VLAN.
+- Shai-Hulud, Chapterhouse and Caladan are owner-confirmed planned systems, not deployed hosts with availability failures.
+- Host bootstrap/repo recovery is being revised in the order Heighliner → IX → Arrakis. Repo-specific deploy-key access and repo-owned recovery scripts are planned; broad server-key removal is gated on all replacement paths working. Laptop01 remains an interactive-workstation exception.
+- Host bootstraps prepare machines and invoke repo-owned installers; service deployment logic belongs to those service repositories. This is the agreed boundary, not a claim that the replacement recovery implementations are complete.
+
+## Earlier baseline — historical, not a current incident list
+
+The remaining sections preserve the prior baseline and its then-current next actions. They were not comprehensively revalidated in September 2026. In particular, old laptop provisioning status, WireGuard drift and the flat-LAN remote-access description must not be treated as current findings. Use the verified corrections above and current host/repository evidence before acting.
 
 ## Status Classification
 

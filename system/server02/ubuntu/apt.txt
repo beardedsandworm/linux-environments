@@ -17,6 +17,7 @@ docker-compose-plugin
 dropbear-initramfs
 efibootmgr
 findutils
+gh
 git-lfs
 gnupg
 gnupg2
