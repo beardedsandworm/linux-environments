@@ -102,7 +102,7 @@ bootstrap, just as the existing bootstrap already requires.
 The committed peer files reflect the live state supplied from Heighliner:
 
 - Heighliner: `10.8.0.1/24`, UDP 51820
-- Midway: `10.8.0.2/32` plus routed `10.42.42.0/24`, keepalive 25
+- Midway: `10.8.0.2/32` plus routed `10.42.0.0/16`, keepalive 25
 - Arrakis: `10.8.0.3/32`
 - IX: `10.8.0.4/32`
 - laptop01: `10.8.0.10/32`

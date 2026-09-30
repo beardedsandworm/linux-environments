@@ -29,7 +29,7 @@ table inet wormlogic_pvp_filter {
         iifname "wg-pvp" oifname "wg-proton" accept
 
         # Approved Wormlogic private networks via wg0.
-        iifname "wg-pvp" oifname "wg0" ip daddr { 10.8.0.0/24, 10.42.42.0/24 } accept
+        iifname "wg-pvp" oifname "wg0" ip daddr { 10.8.0.0/24, 10.42.0.0/16 } accept
 
         # Pi-hole after Docker DNAT from 10.9.0.1:53 and 10.9.0.1:8081.
         iifname "wg-pvp" oifname "br-pihole" ip daddr 172.21.0.2 udp dport 53 accept

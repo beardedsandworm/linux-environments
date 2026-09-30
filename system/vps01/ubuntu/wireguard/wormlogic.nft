@@ -7,7 +7,7 @@ table inet wormlogic_wg_filter {
         type filter hook forward priority -60; policy accept;
 
         # Permit traffic to traverse Heighliner between WireGuard peers, e.g.
-        # laptop01 -> Heighliner -> Midway -> 10.42.42.0/24.
+        # laptop01 -> Heighliner -> Midway -> 10.42.0.0/16.
         iifname "wg0" oifname "wg0" accept
     }
 }

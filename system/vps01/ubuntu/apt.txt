@@ -37,6 +37,7 @@ dhcpcd-base
 diffutils
 dirmngr
 dmidecode
+dnsutils
 docker-buildx-plugin
 docker-ce
 docker-ce-cli
@@ -124,6 +125,7 @@ pollinate
 procps
 psmisc
 python3
+python3-unbound
 qemu-guest-agent
 qrencode
 rsync
@@ -147,6 +149,7 @@ tcpdump
 time
 tmux
 trace-cmd
+tree
 tzdata
 ubuntu-drivers-common
 ubuntu-keyring
@@ -158,6 +161,7 @@ ubuntu-standard
 udev
 ufw
 unattended-upgrades
+unbound
 unminimize
 update-manager-core
 update-notifier-common
