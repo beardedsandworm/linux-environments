@@ -47,10 +47,13 @@ ncurses-base
 ncurses-bin
 needrestart
 netbase
+net-tools
 open-iscsi
 openssh-server
 pollinate
+ripgrep
 shim-signed
+smartmontools
 software-properties-common
 sops
 stow
