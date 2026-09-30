@@ -1,10 +1,9 @@
 android-sdk-cmdline-tools-latest
 bambu-studio
 betterdiscord-installer
-cursor-early-access-bin
+cursor-bin
 displaylink
 heroic-games-launcher-bin
-orca-slicer
 ttf-genzengothic-kai
 ttf-kosugi
 ttf-kosugi-maru

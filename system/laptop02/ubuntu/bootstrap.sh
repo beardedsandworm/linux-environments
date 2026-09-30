@@ -372,6 +372,363 @@ install_packages() {
 }
 
 # --------------------------------------------------
+# Credential reconciliation helpers
+# - local + repo  -> prompt for authoritative source
+# - local only    -> capture
+# - repo only     -> restore
+# - neither       -> generate + capture
+# --------------------------------------------------
+choose_authoritative_source() {
+  local credential_name="$1"
+  local choice
+
+  echo
+  echo "⚠ $credential_name credentials exist both locally and in the repository."
+  echo "  Choose which copy is authoritative:"
+  echo "    [l] local  -> capture local credentials into the repository"
+  echo "    [r] repo   -> restore repository credentials onto this machine"
+  echo
+
+  while true; do
+    read -r -p "Authoritative source [l/r]: " choice
+    case "${choice,,}" in
+      l|local)
+        AUTHORITATIVE_SOURCE="local"
+        return 0
+        ;;
+      r|repo|repository)
+        AUTHORITATIVE_SOURCE="repo"
+        return 0
+        ;;
+      *)
+        echo "Please enter 'l' for local or 'r' for repo."
+        ;;
+    esac
+  done
+}
+
+require_credential_script() {
+  local script="$1"
+
+  if [[ ! -f "$script" ]]; then
+    echo "✗ Required credential helper is missing: $script"
+    exit 1
+  fi
+}
+
+# --------------------------------------------------
+# Setup age + SOPS for encrypted recovery state
+# --------------------------------------------------
+ensure_sops() {
+  if command -v sops >/dev/null 2>&1; then
+    echo "✓ sops already installed"
+    return 0
+  fi
+
+  echo "🔐 Installing sops..."
+
+  local architecture sops_version tmp_deb
+  architecture="$(dpkg --print-architecture)"
+
+  case "$architecture" in
+    amd64|arm64) ;;
+    *)
+      echo "✗ Unsupported architecture for automatic sops install: $architecture"
+      exit 1
+      ;;
+  esac
+
+  sops_version="$(
+    curl -fsSL https://api.github.com/repos/getsops/sops/releases/latest |
+      awk -F '"' '/"tag_name"/ {print $4; exit}'
+  )"
+
+  if [[ -z "$sops_version" ]]; then
+    echo "✗ Failed to determine latest sops version"
+    exit 1
+  fi
+
+  tmp_deb="$(mktemp --suffix=.deb)"
+  curl -fsSL \
+    -o "$tmp_deb" \
+    "https://github.com/getsops/sops/releases/download/${sops_version}/sops_${sops_version#v}_${architecture}.deb"
+
+  sudo dpkg -i "$tmp_deb"
+  rm -f "$tmp_deb"
+
+  echo "✓ sops installed"
+}
+
+setup_age_identity() {
+  local age_base_dir="${XDG_CONFIG_HOME:-$HOME/.config}/sops"
+  local age_dir="$age_base_dir/age"
+  local key_file="${SOPS_AGE_KEY_FILE:-$age_dir/keys.txt}"
+  local key_dir
+  local dotfiles_dir="${XDG_CONFIG_HOME:-$HOME/.config}/dotfiles"
+  local public_key_file="$dotfiles_dir/age-public-key"
+  local machine_id host_secret_dir recovery_file
+  local capture_script restore_script public_key backup_file
+  local local_exists=0 repo_exists=0
+
+  echo "🔐 Reconciling SOPS age identity..."
+
+  if ! command -v age >/dev/null 2>&1 || ! command -v age-keygen >/dev/null 2>&1; then
+    echo "✗ age/age-keygen not found."
+    echo "  Make sure 'age' is present in system/$EXPECTED_MACHINE/$EXPECTED_OS/apt.txt"
+    exit 1
+  fi
+
+  machine_id="$(tr -d '\r\n' < "$MACHINE_ID_FILE")"
+  host_secret_dir="$REPO_ROOT/secrets/$machine_id"
+  recovery_file="$host_secret_dir/age-key.age"
+  capture_script="$REPO_ROOT/scripts/capture-age-key.sh"
+  restore_script="$REPO_ROOT/scripts/restore-age-key.sh"
+  key_dir="$(dirname "$key_file")"
+
+  require_credential_script "$capture_script"
+  require_credential_script "$restore_script"
+
+  mkdir -p "$key_dir" "$dotfiles_dir" "$age_base_dir"
+  chmod 700 "$key_dir" "$age_base_dir"
+
+  if [[ -f "$key_file" ]]; then
+    public_key="$(age-keygen -y "$key_file" 2>/dev/null || true)"
+    if [[ ! "$public_key" =~ ^age1 ]]; then
+      echo "✗ Existing local age identity is invalid: $key_file"
+      exit 1
+    fi
+    local_exists=1
+  fi
+
+  [[ -f "$recovery_file" ]] && repo_exists=1
+
+  if (( local_exists && repo_exists )); then
+    choose_authoritative_source "age"
+
+    if [[ "$AUTHORITATIVE_SOURCE" == "local" ]]; then
+      bash "$capture_script" --force
+    else
+      backup_file="${key_file}.pre-bootstrap.$$"
+      mv "$key_file" "$backup_file"
+
+      if bash "$restore_script"; then
+        rm -f "$backup_file"
+      else
+        mv "$backup_file" "$key_file"
+        echo "✗ Repository age restore failed; original local identity restored."
+        exit 1
+      fi
+    fi
+  elif (( local_exists )); then
+    echo "✓ Local age identity found; no repository recovery copy exists"
+    bash "$capture_script"
+  elif (( repo_exists )); then
+    echo "✓ Repository age recovery copy found; restoring it"
+    bash "$restore_script"
+  else
+    if [[ -d "$host_secret_dir" ]] && \
+       find "$host_secret_dir" -type f -name '*.enc' -print -quit | grep -q .; then
+      echo "✗ Encrypted secrets exist for $machine_id, but no age identity exists"
+      echo "  locally or at: $recovery_file"
+      echo "  Refusing to generate an incompatible replacement identity."
+      exit 1
+    fi
+
+    echo "• No local or repository age identity found; generating a new one..."
+    age-keygen -o "$key_file"
+    chmod 600 "$key_file"
+    bash "$capture_script"
+  fi
+
+  chmod 600 "$key_file"
+  public_key="$(age-keygen -y "$key_file" 2>/dev/null || true)"
+
+  if [[ ! "$public_key" =~ ^age1 ]]; then
+    echo "✗ Failed to derive public age recipient from $key_file"
+    exit 1
+  fi
+
+  printf '%s\n' "$public_key" > "$public_key_file"
+  chmod 644 "$public_key_file"
+
+  AGE_PUBLIC_KEY="$public_key"
+  AGE_RECOVERY_FILE="$recovery_file"
+
+  echo "✓ age identity ready"
+  echo "  Public key: $public_key"
+}
+
+setup_age_and_sops() {
+  setup_age_identity
+  ensure_sops
+  echo "✓ age + sops ready"
+}
+
+# --------------------------------------------------
+# Reconcile SSH credentials
+# - preserve the device identity at ~/.ssh/id_ed25519
+# - ensure a repo-specific GitHub deploy identity for linux-environments
+# - capture the complete current identity set into encrypted recovery state
+# --------------------------------------------------
+is_user_ssh_private_key() {
+  local path="$1"
+  local first_line=""
+
+  [[ -f "$path" ]] || return 1
+
+  case "$(basename "$path")" in
+    *.pub|*-cert.pub|authorized_keys|authorized_keys2|known_hosts|known_hosts.old|known_hosts.*|config|environment|rc)
+      return 1
+      ;;
+  esac
+
+  IFS= read -r first_line < "$path" || true
+  case "$first_line" in
+    "-----BEGIN OPENSSH PRIVATE KEY-----"|\
+    "-----BEGIN RSA PRIVATE KEY-----"|\
+    "-----BEGIN DSA PRIVATE KEY-----"|\
+    "-----BEGIN EC PRIVATE KEY-----"|\
+    "-----BEGIN PRIVATE KEY-----"|\
+    "-----BEGIN ENCRYPTED PRIVATE KEY-----"|\
+    "---- BEGIN SSH2 ENCRYPTED PRIVATE KEY ----")
+      return 0
+      ;;
+    *)
+      return 1
+      ;;
+  esac
+}
+
+has_local_ssh_credentials() {
+  local path
+
+  if [[ -d "$HOME/.ssh" ]]; then
+    while IFS= read -r -d '' path; do
+      if is_user_ssh_private_key "$path"; then
+        return 0
+      fi
+    done < <(find "$HOME/.ssh" -maxdepth 1 -type f -print0 2>/dev/null)
+  fi
+
+  sudo find /etc/ssh -maxdepth 1 -type f -name 'ssh_host_*_key' \
+    -print -quit 2>/dev/null | grep -q .
+}
+
+ensure_local_ssh_credentials() {
+  local ssh_dir="$HOME/.ssh"
+  local device_key="$ssh_dir/id_ed25519"
+  local device_pub="${device_key}.pub"
+  local deploy_key="$ssh_dir/id_ed25519_git_linux-environments"
+  local deploy_pub="${deploy_key}.pub"
+
+  mkdir -p "$ssh_dir"
+  chmod 700 "$ssh_dir"
+
+  if [[ ! -f "$device_key" ]]; then
+    echo "• Generating missing device SSH identity..."
+    ssh-keygen -t ed25519 \
+      -f "$device_key" \
+      -N "" \
+      -C "$EXPECTED_MACHINE:device"
+  fi
+
+  chmod 600 "$device_key"
+
+  if [[ ! -f "$device_pub" ]]; then
+    ssh-keygen -y -f "$device_key" > "$device_pub"
+  fi
+  chmod 644 "$device_pub"
+
+  if [[ ! -f "$deploy_key" ]]; then
+    echo "• Generating linux-environments GitHub deploy key..."
+    ssh-keygen -t ed25519 \
+      -f "$deploy_key" \
+      -N "" \
+      -C "$EXPECTED_MACHINE:github:linux-environments"
+  fi
+
+  chmod 600 "$deploy_key"
+
+  if [[ ! -f "$deploy_pub" ]]; then
+    ssh-keygen -y -f "$deploy_key" > "$deploy_pub"
+  fi
+  chmod 644 "$deploy_pub"
+
+  sudo ssh-keygen -A
+}
+
+reconcile_ssh_credentials() {
+  local machine_id ssh_secret_dir capture_script restore_script
+  local local_exists=0 repo_exists=0
+
+  echo "🔑 Reconciling SSH credentials..."
+
+  machine_id="$(tr -d '\r\n' < "$MACHINE_ID_FILE")"
+  ssh_secret_dir="$REPO_ROOT/secrets/$machine_id/ssh"
+  capture_script="$REPO_ROOT/scripts/capture-ssh-credentials.sh"
+  restore_script="$REPO_ROOT/scripts/restore-ssh-credentials.sh"
+
+  require_credential_script "$capture_script"
+  require_credential_script "$restore_script"
+
+  has_local_ssh_credentials && local_exists=1
+  if [[ -d "$ssh_secret_dir" ]] && \
+     find "$ssh_secret_dir" -type f -name '*.enc' -print -quit | grep -q .; then
+    repo_exists=1
+  fi
+
+  if (( local_exists && repo_exists )); then
+    choose_authoritative_source "SSH"
+
+    if [[ "$AUTHORITATIVE_SOURCE" == "repo" ]]; then
+      echo "• Repository SSH credentials selected as authoritative"
+      bash "$restore_script" --force
+    else
+      echo "• Local SSH credentials selected as authoritative"
+    fi
+  elif (( local_exists )); then
+    echo "✓ Local SSH credentials found; no repository copy exists"
+  elif (( repo_exists )); then
+    echo "✓ Repository SSH credentials found; restoring them"
+    bash "$restore_script" --force
+  else
+    echo "• No local or repository SSH credentials found; generating them..."
+  fi
+
+  ensure_local_ssh_credentials
+  bash "$capture_script" --force
+
+  echo "✓ SSH credentials ready"
+}
+
+configure_linux_environments_git_access() {
+  local deploy_key="$HOME/.ssh/id_ed25519_git_linux-environments"
+  local origin=""
+
+  if [[ ! -f "$deploy_key" ]]; then
+    echo "✗ linux-environments deploy key is missing: $deploy_key"
+    exit 1
+  fi
+
+  origin="$(git -C "$REPO_ROOT" remote get-url origin 2>/dev/null || true)"
+
+  if [[ "$origin" =~ ^https://github\.com/(.+)$ ]]; then
+    origin="git@github.com:${BASH_REMATCH[1]}"
+    git -C "$REPO_ROOT" remote set-url origin "$origin"
+    echo "✓ Converted linux-environments origin to SSH"
+  elif [[ -n "$origin" ]]; then
+    echo "✓ linux-environments origin already configured: $origin"
+  else
+    echo "⚠ linux-environments has no origin remote configured"
+  fi
+
+  git -C "$REPO_ROOT" config core.sshCommand \
+    "ssh -i $deploy_key -o IdentitiesOnly=yes"
+
+  echo "✓ linux-environments is bound to its repo-specific deploy key"
+}
+
+# --------------------------------------------------
 # Install Starship prompt
 # --------------------------------------------------
 install_starship() {
@@ -656,6 +1013,33 @@ setup_package_export() {
 }
 
 # --------------------------------------------------
+# Install and enable scheduled credential capture
+# --------------------------------------------------
+setup_credential_capture() {
+  local service_src="$REPO_ROOT/systemd/credential-capture.service"
+  local timer_src="$REPO_ROOT/systemd/credential-capture.timer"
+  local user_systemd_dir="$HOME/.config/systemd/user"
+
+  echo "⚙ Setting up scheduled credential capture..."
+
+  if [[ ! -f "$service_src" || ! -f "$timer_src" ]]; then
+    CREDENTIAL_CAPTURE_CONFIGURED=0
+    echo "⚠ credential-capture.service/timer not present yet; skipping"
+    return 0
+  fi
+
+  mkdir -p "$user_systemd_dir"
+  cp "$service_src" "$user_systemd_dir/"
+  cp "$timer_src" "$user_systemd_dir/"
+
+  systemctl --user daemon-reload
+  systemctl --user enable --now credential-capture.timer
+  CREDENTIAL_CAPTURE_CONFIGURED=1
+
+  echo "✓ credential-capture.timer enabled"
+}
+
+# --------------------------------------------------
 # Install and enable shared system update service/timer
 # --------------------------------------------------
 setup_system_update() {
@@ -715,65 +1099,142 @@ setup_git_monitoring() {
 # --------------------------------------------------
 # Setup Wormlogic WireGuard client
 # --------------------------------------------------
-setup_wormlogic_vpn() {
-  local vpn_name="wormlogic"
-  local vps_host="vpn.wormlogic.com"
-  local vpn_allowed_ips="10.8.0.0/24, 10.42.42.0/24"
-  local vpn_dns_server="10.42.42.1"
-  local vpn_dns_domain="~wormlogic.com"
-  local default_vpn_ip="10.8.0.11/32"
+read_wireguard_private_key() {
+  local config_file="$1"
 
-  local machine_id_file="${XDG_CONFIG_HOME:-$HOME/.config}/dotfiles/machine-id"
-  local machine_id
-  local local_dir
-  local private_key_file
-  local public_key_file
-  local source_conf
-  local target_conf
-  local settings_file
-  local server_pubkey_file
-  local client_private_key
-  local client_vpn_ip
-  local vps_public_key
-  local input_vpn_ip
+  awk '
+    /^[[:space:]]*PrivateKey[[:space:]]*=/ {
+      pos=index($0, "=")
+      value=substr($0, pos + 1)
+      sub(/^[[:space:]]*/, "", value)
+      sub(/[[:space:]]*$/, "", value)
+      print value
+      exit
+    }
+  ' "$config_file" | tr -d '[:space:]'
+}
 
-  echo " Setting up Wormlogic WireGuard client..."
+reconcile_wireguard_credentials() {
+  local machine_id wireguard_secret_dir capture_script restore_script
+  local system_conf repo_conf staged_conf
+  local local_exists=0 repo_exists=0
 
-  if [[ ! -f "$machine_id_file" ]]; then
-    echo "✗ Missing machine-id file: $machine_id_file"
-    exit 1
-  fi
-
-  machine_id="$(<"$machine_id_file")"
-
-  local_dir="$REPO_ROOT/local/wireguard"
-  private_key_file="$local_dir/${machine_id}.key"
-  public_key_file="$local_dir/${machine_id}.pub"
-  source_conf="$local_dir/$vpn_name.conf"
-  target_conf="/etc/wireguard/$vpn_name.conf"
-  settings_file="$local_dir/$vpn_name.env"
-  server_pubkey_file="$REPO_ROOT/shared/wireguard/wormlogic-server.pub"
+  echo "🔐 Reconciling WireGuard credentials..."
 
   if ! command -v wg >/dev/null 2>&1; then
     echo "✗ wg not found. Install wireguard-tools first."
     exit 1
   fi
 
-  mkdir -p "$local_dir"
-  mkdir -p "$(dirname "$server_pubkey_file")"
-  chmod 700 "$REPO_ROOT/local" "$local_dir"
+  machine_id="$(tr -d '\r\n' < "$MACHINE_ID_FILE")"
+  wireguard_secret_dir="$REPO_ROOT/secrets/$machine_id/wireguard"
+  system_conf="/etc/wireguard/wormlogic.conf"
+  repo_conf="$wireguard_secret_dir/wormlogic.conf.enc"
+  staged_conf="${XDG_CONFIG_HOME:-$HOME/.config}/dotfiles/wireguard/wormlogic.conf"
+  capture_script="$REPO_ROOT/scripts/capture-wireguard-credentials.sh"
+  restore_script="$REPO_ROOT/scripts/restore-wireguard-credentials.sh"
 
-  if [[ ! -f "$private_key_file" ]]; then
-    echo "• Generating WireGuard key for $machine_id..."
-    wg genkey | tee "$private_key_file" | wg pubkey >"$public_key_file"
-    chmod 600 "$private_key_file"
-    chmod 644 "$public_key_file"
-  else
-    echo "✓ Existing WireGuard key found for $machine_id"
-    if [[ ! -f "$public_key_file" ]]; then
-      wg pubkey <"$private_key_file" >"$public_key_file"
-      chmod 644 "$public_key_file"
+  require_credential_script "$capture_script"
+  require_credential_script "$restore_script"
+
+  sudo test -f "$system_conf" && local_exists=1
+  [[ -f "$repo_conf" ]] && repo_exists=1
+
+  WIREGUARD_GENERATE_NEW=0
+
+  if (( local_exists && repo_exists )); then
+    choose_authoritative_source "WireGuard"
+
+    if [[ "$AUTHORITATIVE_SOURCE" == "local" ]]; then
+      echo "• Local WireGuard config selected as authoritative"
+      bash "$capture_script" --force
+      bash "$restore_script" --force
+    else
+      echo "• Repository WireGuard config selected as authoritative"
+      bash "$restore_script" --force
     fi
+  elif (( local_exists )); then
+    echo "✓ Local WireGuard config found; no repository copy exists"
+    bash "$capture_script"
+    bash "$restore_script" --force
+  elif (( repo_exists )); then
+    echo "✓ Repository WireGuard config found; restoring it"
+    bash "$restore_script" --force
+  else
+    echo "• No local or repository WireGuard config found"
+    echo "  A new Wormlogic identity will be generated during VPN setup and captured afterward."
+    WIREGUARD_GENERATE_NEW=1
+    rm -f -- "$staged_conf" "${staged_conf%.conf}.public-key"
+  fi
+
+  echo "✓ WireGuard recovery state ready"
+}
+
+setup_wormlogic_vpn() {
+  local vpn_name="wormlogic"
+  local vps_host="vpn.wormlogic.com"
+  local vpn_allowed_ips="10.8.0.0/24, 10.42.0.0/16"
+  local vpn_dns_server="10.42.20.10"
+  local vpn_dns_domain="~wormlogic.com"
+  local default_vpn_ip="10.8.0.11/32"
+
+  local machine_id
+  local local_dir
+  local credential_dir
+  local staged_conf
+  local staged_public
+  local local_public_file
+  local source_conf
+  local target_conf
+  local settings_file
+  local server_pubkey_file
+  local capture_script
+  local restore_script
+
+  local client_private_key
+  local client_vpn_ip
+  local vps_public_key
+  local input_vpn_ip
+
+  echo "🔐 Setting up Wormlogic WireGuard client..."
+
+  machine_id="$(tr -d '\r\n' < "$MACHINE_ID_FILE")"
+
+  local_dir="$REPO_ROOT/local/wireguard"
+  credential_dir="${XDG_CONFIG_HOME:-$HOME/.config}/dotfiles/wireguard"
+  staged_conf="$credential_dir/${vpn_name}.conf"
+  staged_public="$credential_dir/${vpn_name}.public-key"
+  local_public_file="$local_dir/${machine_id}.pub"
+  source_conf="$local_dir/$vpn_name.conf"
+  target_conf="/etc/wireguard/$vpn_name.conf"
+  settings_file="$local_dir/$vpn_name.env"
+  server_pubkey_file="$REPO_ROOT/shared/wireguard/wormlogic-server.pub"
+  capture_script="$REPO_ROOT/scripts/capture-wireguard-credentials.sh"
+  restore_script="$REPO_ROOT/scripts/restore-wireguard-credentials.sh"
+
+  require_credential_script "$capture_script"
+  require_credential_script "$restore_script"
+
+  mkdir -p "$local_dir" "$credential_dir" "$(dirname "$server_pubkey_file")"
+  chmod 700 "$REPO_ROOT/local" "$local_dir" "$credential_dir"
+
+  if [[ -f "$staged_conf" ]]; then
+    client_private_key="$(read_wireguard_private_key "$staged_conf")"
+    if [[ -z "$client_private_key" ]]; then
+      echo "✗ Recovered WireGuard config has no PrivateKey: $staged_conf"
+      exit 1
+    fi
+  elif [[ "${WIREGUARD_GENERATE_NEW:-0}" -eq 1 ]]; then
+    echo "• Generating new WireGuard identity for $machine_id..."
+    client_private_key="$(wg genkey)"
+  else
+    echo "✗ Reconciled WireGuard config is missing: $staged_conf"
+    exit 1
+  fi
+
+  if ! printf '%s\n' "$client_private_key" | wg pubkey >/dev/null 2>&1; then
+    echo "✗ Wormlogic PrivateKey is invalid"
+    exit 1
   fi
 
   if [[ -f "$settings_file" ]]; then
@@ -782,7 +1243,7 @@ setup_wormlogic_vpn() {
   fi
 
   if [[ -f "$server_pubkey_file" ]]; then
-    vps_public_key="$(tr -d '[:space:]' <"$server_pubkey_file")"
+    vps_public_key="$(tr -d '[:space:]' < "$server_pubkey_file")"
   fi
 
   if [[ -z "${vps_public_key:-}" ]]; then
@@ -798,7 +1259,7 @@ setup_wormlogic_vpn() {
       exit 1
     fi
 
-    printf '%s\n' "$vps_public_key" >"$server_pubkey_file"
+    printf '%s\n' "$vps_public_key" > "$server_pubkey_file"
     chmod 644 "$server_pubkey_file"
 
     echo "✓ Saved VPS public key to $server_pubkey_file"
@@ -823,12 +1284,8 @@ setup_wormlogic_vpn() {
     echo "WORMLOGIC_ALLOWED_IPS='$vpn_allowed_ips'"
     echo "WORMLOGIC_DNS_SERVER='$vpn_dns_server'"
     echo "WORMLOGIC_DNS_DOMAIN='$vpn_dns_domain'"
-  } >"$settings_file"
+  } > "$settings_file"
   chmod 600 "$settings_file"
-
-  client_private_key="$(<"$private_key_file")"
-
-  echo "• Writing local WireGuard config: $source_conf"
 
   {
     echo "[Interface]"
@@ -840,14 +1297,25 @@ setup_wormlogic_vpn() {
     echo "Endpoint = $vps_host:51820"
     echo "AllowedIPs = $vpn_allowed_ips"
     echo "PersistentKeepalive = 25"
-  } >"$source_conf"
-
+  } > "$source_conf"
   chmod 600 "$source_conf"
-
-  echo "• Installing WireGuard config: $target_conf"
 
   sudo install -d -m 700 /etc/wireguard
   sudo install -m 600 "$source_conf" "$target_conf"
+
+  # The completed live config is now authoritative. Capture it into encrypted
+  # recovery state and restore staging so the derived public key agrees.
+  bash "$capture_script" --force
+  bash "$restore_script" --force
+
+  if [[ ! -f "$staged_public" ]]; then
+    echo "✗ WireGuard restore did not produce the expected public key:"
+    echo "  $staged_public"
+    exit 1
+  fi
+
+  install -m 0644 "$staged_public" "$local_public_file"
+
   sudo systemctl enable --now "wg-quick@$vpn_name"
 
   if command -v resolvectl >/dev/null 2>&1; then
@@ -857,10 +1325,12 @@ setup_wormlogic_vpn() {
   fi
 
   WORMLOGIC_VPN_MACHINE_ID="$machine_id"
-  WORMLOGIC_VPN_PUBLIC_KEY="$(<"$public_key_file")"
+  WORMLOGIC_VPN_PUBLIC_KEY="$(tr -d '\r\n' < "$staged_public")"
   WORMLOGIC_VPN_IP="$client_vpn_ip"
 
   echo "✓ Wormlogic VPN configured"
+  echo "  VPN IP:     $client_vpn_ip"
+  echo "  AllowedIPs: $vpn_allowed_ips"
 }
 
 # --------------------------------------------------
@@ -955,6 +1425,20 @@ show_summary() {
   echo "Local IP:"
   echo "  $local_ip"
   echo
+  echo "SOPS age identity:"
+  echo "  Public key: ${AGE_PUBLIC_KEY:-unavailable}"
+  echo "  Recovery:   ${AGE_RECOVERY_FILE:-unavailable}"
+  echo
+  echo "GitHub deploy key for linux-environments:"
+  echo "  Repository: linux-environments"
+  echo "  Deploy-key title: $EXPECTED_MACHINE"
+  echo "  Add with write access enabled:"
+  if [[ -f "$HOME/.ssh/id_ed25519_git_linux-environments.pub" ]]; then
+    sed 's/^/  /' "$HOME/.ssh/id_ed25519_git_linux-environments.pub"
+  else
+    echo "  unavailable"
+  fi
+  echo
   echo "WireGuard (Wormlogic VPN):"
   if [[ -n "${WORMLOGIC_VPN_PUBLIC_KEY:-}" ]]; then
     echo " Interface: wormlogic"
@@ -998,6 +1482,9 @@ main() {
   initial_update
   ensure_package_ecosystems
   install_packages
+  setup_age_and_sops
+  reconcile_ssh_credentials
+  configure_linux_environments_git_access
   install_starship
   install_nerd_font
   set_user_environment_defaults
@@ -1006,9 +1493,11 @@ main() {
   setup_touchscreen_disable
   configure_system
   setup_package_export
+  setup_credential_capture
   setup_system_update
   setup_git_monitoring
   setup_shared_monitoring
+  reconcile_wireguard_credentials
   setup_wormlogic_vpn
   prepare_shell_dotfiles
   apply_general_dotfiles
@@ -1019,6 +1508,11 @@ main() {
   echo
   echo "📊 Services configured:"
   echo "   - package-export        → state tracking (runs now + daily)"
+  if [[ "${CREDENTIAL_CAPTURE_CONFIGURED:-0}" -eq 1 ]]; then
+    echo "   - credential-capture    → encrypted credential state capture (scheduled)"
+  else
+    echo "   - credential-capture    → pending service/timer unit files"
+  fi
   echo "   - system-update         → system maintenance (scheduled)"
   echo "   - repo-update-check     → remote update awareness (daily)"
   echo "   - dotfiles-change-check → local dotfiles drift awareness (daily)"

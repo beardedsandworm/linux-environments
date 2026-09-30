@@ -114,6 +114,7 @@ man-db
 nano
 nautilus
 neovim
+nextcloud-client
 noto-fonts
 noto-fonts-cjk
 nss-mdns
