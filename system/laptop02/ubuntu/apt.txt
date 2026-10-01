@@ -1,3 +1,4 @@
+age
 alacritty
 blender
 bsdutils
@@ -26,6 +27,7 @@ ibus-table-cangjie5
 ibus-table-cangjie-big
 init
 inkscape
+keepassxc
 language-pack-en
 language-pack-en-base
 language-pack-gnome-en
@@ -49,6 +51,7 @@ ncurses-base
 ncurses-bin
 neofetch
 neovim
+nextcloud-desktop
 open-iscsi
 python3-netifaces
 qbittorrent

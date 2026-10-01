@@ -752,27 +752,23 @@ install_starship() {
 # Install Nerd Font: FiraCode
 # --------------------------------------------------
 install_nerd_font() {
-  local tmpdir
+    local font="FiraCode"
+    local tmp_dir
 
-  echo "🔤 Installing Nerd Font: FiraCode..."
+    echo "🔤 Installing Nerd Font: ${font}..."
 
-  if command -v fc-list >/dev/null 2>&1 && fc-list | grep -qi "FiraCode Nerd Font"; then
-    echo "✓ FiraCode Nerd Font already installed"
-    return 0
-  fi
+    tmp_dir="$(mktemp -d)"
+    trap 'rm -rf "$tmp_dir"' RETURN
 
-  tmpdir="$(mktemp -d)"
-  git clone --depth 1 https://github.com/ryanoasis/nerd-fonts.git "$tmpdir/nerd-fonts"
-  pushd "$tmpdir/nerd-fonts" >/dev/null
-  ./install.sh FiraCode
-  popd >/dev/null
-  rm -rf "$tmpdir"
+    curl -fsSL \
+        https://raw.githubusercontent.com/ryanoasis/nerd-fonts/master/install.sh \
+        -o "$tmp_dir/install.sh"
 
-  if command -v fc-cache >/dev/null 2>&1; then
-    fc-cache -fv >/dev/null 2>&1 || true
-  fi
+    chmod +x "$tmp_dir/install.sh"
 
-  echo "✓ FiraCode Nerd Font installed"
+    "$tmp_dir/install.sh" install "$font"
+
+    echo "✓ Nerd Font installed: ${font}"
 }
 
 # --------------------------------------------------
@@ -1114,6 +1110,43 @@ read_wireguard_private_key() {
   ' "$config_file" | tr -d '[:space:]'
 }
 
+read_wireguard_address() {
+  local config_file="$1"
+
+  awk '
+    /^[[:space:]]*Address[[:space:]]*=/ {
+      pos=index($0, "=")
+      value=substr($0, pos + 1)
+      sub(/^[[:space:]]*/, "", value)
+      sub(/[[:space:]]*$/, "", value)
+      print value
+      exit
+    }
+  ' "$config_file" | tr -d '[:space:]'
+}
+
+read_wireguard_peer_public_key() {
+  local config_file="$1"
+
+  awk '
+    /^[[:space:]]*\[Peer\][[:space:]]*$/ {
+      in_peer=1
+      next
+    }
+    /^[[:space:]]*\[/ {
+      in_peer=0
+    }
+    in_peer && /^[[:space:]]*PublicKey[[:space:]]*=/ {
+      pos=index($0, "=")
+      value=substr($0, pos + 1)
+      sub(/^[[:space:]]*/, "", value)
+      sub(/[[:space:]]*$/, "", value)
+      print value
+      exit
+    }
+  ' "$config_file" | tr -d '[:space:]'
+}
+
 reconcile_wireguard_credentials() {
   local machine_id wireguard_secret_dir capture_script restore_script
   local system_conf repo_conf staged_conf
@@ -1179,15 +1212,10 @@ setup_wormlogic_vpn() {
   local default_vpn_ip="10.8.0.11/32"
 
   local machine_id
-  local local_dir
   local credential_dir
   local staged_conf
   local staged_public
-  local local_public_file
-  local source_conf
   local target_conf
-  local settings_file
-  local server_pubkey_file
   local capture_script
   local restore_script
 
@@ -1200,33 +1228,66 @@ setup_wormlogic_vpn() {
 
   machine_id="$(tr -d '\r\n' < "$MACHINE_ID_FILE")"
 
-  local_dir="$REPO_ROOT/local/wireguard"
+  # Runtime/recovery staging belongs outside the repository. The encrypted
+  # authoritative recovery copy remains under secrets/<machine>/wireguard/.
   credential_dir="${XDG_CONFIG_HOME:-$HOME/.config}/dotfiles/wireguard"
   staged_conf="$credential_dir/${vpn_name}.conf"
   staged_public="$credential_dir/${vpn_name}.public-key"
-  local_public_file="$local_dir/${machine_id}.pub"
-  source_conf="$local_dir/$vpn_name.conf"
   target_conf="/etc/wireguard/$vpn_name.conf"
-  settings_file="$local_dir/$vpn_name.env"
-  server_pubkey_file="$REPO_ROOT/shared/wireguard/wormlogic-server.pub"
   capture_script="$REPO_ROOT/scripts/capture-wireguard-credentials.sh"
   restore_script="$REPO_ROOT/scripts/restore-wireguard-credentials.sh"
 
   require_credential_script "$capture_script"
   require_credential_script "$restore_script"
 
-  mkdir -p "$local_dir" "$credential_dir" "$(dirname "$server_pubkey_file")"
-  chmod 700 "$REPO_ROOT/local" "$local_dir" "$credential_dir"
+  mkdir -p "$credential_dir"
+  chmod 700 "$credential_dir"
 
   if [[ -f "$staged_conf" ]]; then
+    # A recovered full config is authoritative for all identity and peer data.
     client_private_key="$(read_wireguard_private_key "$staged_conf")"
+    client_vpn_ip="$(read_wireguard_address "$staged_conf")"
+    vps_public_key="$(read_wireguard_peer_public_key "$staged_conf")"
+
     if [[ -z "$client_private_key" ]]; then
       echo "✗ Recovered WireGuard config has no PrivateKey: $staged_conf"
+      exit 1
+    fi
+
+    if [[ -z "$client_vpn_ip" ]]; then
+      echo "✗ Recovered WireGuard config has no Address: $staged_conf"
+      exit 1
+    fi
+
+    if [[ -z "$vps_public_key" ]]; then
+      echo "✗ Recovered WireGuard config has no peer PublicKey: $staged_conf"
       exit 1
     fi
   elif [[ "${WIREGUARD_GENERATE_NEW:-0}" -eq 1 ]]; then
     echo "• Generating new WireGuard identity for $machine_id..."
     client_private_key="$(wg genkey)"
+
+    vps_public_key="${WORMLOGIC_VPS_PUBLIC_KEY:-}"
+    if [[ -z "$vps_public_key" ]]; then
+      echo
+      echo "Missing Wormlogic VPS WireGuard public key."
+      echo "Get it with:"
+      echo "  ssh lightweight@vpn.wormlogic.com 'sudo cat /etc/wireguard/publickey'"
+      echo
+      read -r -p "VPS WireGuard public key: " vps_public_key
+    fi
+
+    if [[ -z "$vps_public_key" ]]; then
+      echo "✗ VPS public key cannot be empty"
+      exit 1
+    fi
+
+    client_vpn_ip="${WORMLOGIC_VPN_IP:-}"
+    if [[ -z "$client_vpn_ip" ]]; then
+      echo
+      read -r -p "Laptop VPN IP [$default_vpn_ip]: " input_vpn_ip
+      client_vpn_ip="${input_vpn_ip:-$default_vpn_ip}"
+    fi
   else
     echo "✗ Reconciled WireGuard config is missing: $staged_conf"
     exit 1
@@ -1237,55 +1298,15 @@ setup_wormlogic_vpn() {
     exit 1
   fi
 
-  if [[ -f "$settings_file" ]]; then
-    # shellcheck disable=SC1090
-    source "$settings_file"
-  fi
-
-  if [[ -f "$server_pubkey_file" ]]; then
-    vps_public_key="$(tr -d '[:space:]' < "$server_pubkey_file")"
-  fi
-
-  if [[ -z "${vps_public_key:-}" ]]; then
-    echo
-    echo "Missing Wormlogic VPS WireGuard public key."
-    echo "Get it with:"
-    echo "  ssh lightweight@vpn.wormlogic.com 'sudo cat /etc/wireguard/publickey'"
-    echo
-    read -r -p "VPS WireGuard public key: " vps_public_key
-
-    if [[ -z "$vps_public_key" ]]; then
-      echo "✗ VPS public key cannot be empty"
-      exit 1
-    fi
-
-    printf '%s\n' "$vps_public_key" > "$server_pubkey_file"
-    chmod 644 "$server_pubkey_file"
-
-    echo "✓ Saved VPS public key to $server_pubkey_file"
-    echo "  Commit this file so future bootstraps do not prompt again."
-  fi
-
-  if [[ -z "${WORMLOGIC_VPN_IP:-}" ]]; then
-    echo
-    read -r -p "Laptop VPN IP [$default_vpn_ip]: " input_vpn_ip
-    WORMLOGIC_VPN_IP="${input_vpn_ip:-$default_vpn_ip}"
-  fi
-
-  client_vpn_ip="$WORMLOGIC_VPN_IP"
-
   if [[ ! "$client_vpn_ip" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+/[0-9]+$ ]]; then
     echo "✗ Invalid client VPN IP/CIDR: $client_vpn_ip"
     exit 1
   fi
 
-  {
-    echo "WORMLOGIC_VPN_IP='$client_vpn_ip'"
-    echo "WORMLOGIC_ALLOWED_IPS='$vpn_allowed_ips'"
-    echo "WORMLOGIC_DNS_SERVER='$vpn_dns_server'"
-    echo "WORMLOGIC_DNS_DOMAIN='$vpn_dns_domain'"
-  } > "$settings_file"
-  chmod 600 "$settings_file"
+  # Build the live config directly into the root-owned target. Nothing
+  # generated here is written anywhere inside the git repository.
+  sudo install -d -m 700 /etc/wireguard
+  sudo install -o root -g root -m 600 /dev/null "$target_conf"
 
   {
     echo "[Interface]"
@@ -1297,13 +1318,9 @@ setup_wormlogic_vpn() {
     echo "Endpoint = $vps_host:51820"
     echo "AllowedIPs = $vpn_allowed_ips"
     echo "PersistentKeepalive = 25"
-  } > "$source_conf"
-  chmod 600 "$source_conf"
+  } | sudo tee "$target_conf" >/dev/null
 
-  sudo install -d -m 700 /etc/wireguard
-  sudo install -m 600 "$source_conf" "$target_conf"
-
-  # The completed live config is now authoritative. Capture it into encrypted
+  # The completed live config is authoritative. Capture it into encrypted
   # recovery state and restore staging so the derived public key agrees.
   bash "$capture_script" --force
   bash "$restore_script" --force
@@ -1313,8 +1330,6 @@ setup_wormlogic_vpn() {
     echo "  $staged_public"
     exit 1
   fi
-
-  install -m 0644 "$staged_public" "$local_public_file"
 
   sudo systemctl enable --now "wg-quick@$vpn_name"
 

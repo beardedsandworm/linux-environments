@@ -9,12 +9,17 @@ if [[ -z "$VPN_USER" || "$VPN_USER" == "root" ]]; then
     exit 1
 fi
 
-for command_name in sudo visudo install mktemp; do
+for command_name in sudo install mktemp; do
     command -v "$command_name" >/dev/null 2>&1 || {
         echo "✗ Required command not found: $command_name" >&2
         exit 1
     }
 done
+
+if [[ ! -x /usr/sbin/visudo ]]; then
+    echo "✗ Required command not found: /usr/sbin/visudo" >&2
+    exit 1
+fi
 
 tmp="$(mktemp)"
 trap 'rm -f "$tmp"' EXIT

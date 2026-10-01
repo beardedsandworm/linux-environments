@@ -2,6 +2,7 @@ bare
 core20
 core22
 core24
+core26
 cups
 discord
 firefox
@@ -15,6 +16,7 @@ kf6-core24
 lxqt-support-core24
 mesa-2404
 mesa-core20
+mesa-core22
 plex-desktop
 snapd
 snapd-desktop-integration
