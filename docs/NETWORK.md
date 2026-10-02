@@ -1,7 +1,7 @@
 # Network
 
 **Repository:** `linux-environments`
-**Verified:** 2026-09-28
+**Verified / reconciled:** 2026-10-02
 **Scope:** Current logical topology, observed infrastructure addresses, DNS and administrative access. This is a documented snapshot, not a replacement for Midway's live configuration.
 
 ## Authority and status
@@ -56,7 +56,7 @@ These are configuration observations. Full DHCP acquisition from a client in eac
 | Pi-hole 1 | `10.42.20.10` | Physical resolver; SSH and DNS work |
 | Pi-hole 2 | `10.42.20.11` | Arrakis macvlan container; DNS works |
 | Heighliner (`vps01`, hostname `wormlogic-vps01`) | `10.8.0.1`; administrative hostname `vpn.wormlogic.com` | VPS, WireGuard hub and operations services; SSH works |
-| Existing media workstation (`lightweight-pc.` in DHCP) | `10.42.42.3` | Live host observed by Midway; Arrakis media proxy routes target it. Individual media application health was not established |
+| Chapterhouse hardware (pre-`server04` deployment) | `10.42.42.3` | Existing host/hardware currently observed on TRUSTED. `server04` preparation supersedes the retired `desktop01` provisioning identity; the planned server deployment target is listed below. |
 
 Arrakis has a host-side Pi-hole macvlan shim at `10.42.20.100/32`, with a route to `10.42.20.11`. It is host/container connectivity plumbing, not another Pi-hole instance.
 
@@ -66,12 +66,12 @@ Configured Omada infrastructure addresses are `10.42.10.3`, `.4`, `.5` and `.10`
 
 The owner confirms **Shai-Hulud, Chapterhouse and Caladan do not yet exist as deployed infrastructure**. Their configured future targets are:
 
-| Planned system | Configured future address / reservation |
-|---|---|
-| Chapterhouse | `10.42.20.3` |
-| Caladan | `10.42.20.6` |
-| Shai-Hulud control reservation | `10.42.25.3` (`kube_cont01`) |
-| Shai-Hulud worker reservations | `10.42.25.4–6` (`kube_work01–03`) |
+| Planned system | Configured future LAN address / reservation | Prepared Wormlogic VPN assignment |
+|---|---|---|
+| Chapterhouse (`server04`) | `10.42.20.3` | `10.8.0.6/32` |
+| Caladan (`server03`) | `10.42.20.6` | `10.8.0.5/32` |
+| Shai-Hulud control reservation | `10.42.25.3` (`kube_cont01`) | — |
+| Shai-Hulud worker reservations | `10.42.25.4–6` (`kube_work01–03`) | — |
 
 The CLUSTER VLAN exists; a deployed cluster does not. Do not classify these planned hosts as down or assume credentials, workloads, storage or cluster services exist. The old `.42.50–53` cluster reservation description is superseded by the configured CLUSTER addresses above.
 
@@ -115,11 +115,20 @@ The administrative network is `10.8.0.0/24`:
 | `10.8.0.3` | Arrakis |
 | `10.8.0.4` | IX |
 
+Prepared but not yet deployed server peer assignments are:
+
+| Address | Prepared system |
+|---|---|
+| `10.8.0.5/32` | Caladan (`server03`) |
+| `10.8.0.6/32` | Chapterhouse (`server04`) |
+
+These prepared addresses come from the current host bootstrap/recovery configuration. They are not evidence that the peers are enrolled on Heighliner or currently reachable.
+
 Arrakis is a service host and VPN peer, **not the home gateway**. Midway holds that role. Heighliner also hosts the `10.9.0.0/24` PVP VPN network; Midway has a route for that subnet through its `wormlogic` tunnel. This document does not assert that every VPN client has identical access.
 
 Midway has a `10.42.0.0/16` route through `wg0`, alongside the more-specific connected VLAN `/24` routes. The connected VLAN routes take precedence; unassigned portions of the aggregate can follow the VPN. The Proton tunnel is separate from the administrative tunnel.
 
-SSH key authentication to `vpn.wormlogic.com` and the deployed LAN hosts listed above was verified. The assessment used existing identities and verified host keys; no passwords or private keys belong in this document. Laptop VPN assignments are omitted from the verified table because they were not independently revalidated in this pass.
+SSH key authentication to `vpn.wormlogic.com` and the deployed LAN hosts listed above was verified. The assessment used existing identities and verified host keys; no passwords or private keys belong in this document. Laptop VPN assignments are omitted from the verified table unless independently revalidated. `laptop02` is configured for `10.8.0.11/32`; this document does not use that configured assignment as proof of a current handshake.
 
 ### Segmentation policy status
 

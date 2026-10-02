@@ -954,6 +954,40 @@ read_wireguard_private_key() {
   ' "$config_file" | tr -d '[:space:]'
 }
 
+read_wireguard_interface_address() {
+  local config_file="$1"
+
+  awk '
+    /^[[:space:]]*\[Interface\][[:space:]]*$/ { in_interface=1; next }
+    /^[[:space:]]*\[/ { in_interface=0 }
+    in_interface && /^[[:space:]]*Address[[:space:]]*=/ {
+      pos=index($0, "=")
+      value=substr($0, pos + 1)
+      sub(/^[[:space:]]*/, "", value)
+      sub(/[[:space:]]*$/, "", value)
+      print value
+      exit
+    }
+  ' "$config_file" | tr -d '[:space:]'
+}
+
+read_wireguard_peer_public_key() {
+  local config_file="$1"
+
+  awk '
+    /^[[:space:]]*\[Peer\][[:space:]]*$/ { in_peer=1; next }
+    /^[[:space:]]*\[/ { in_peer=0 }
+    in_peer && /^[[:space:]]*PublicKey[[:space:]]*=/ {
+      pos=index($0, "=")
+      value=substr($0, pos + 1)
+      sub(/^[[:space:]]*/, "", value)
+      sub(/[[:space:]]*$/, "", value)
+      print value
+      exit
+    }
+  ' "$config_file" | tr -d '[:space:]'
+}
+
 setup_wormlogic_vpn() {
   local vpn_name="wormlogic"
   local vps_host="vpn.wormlogic.com"
@@ -961,20 +995,18 @@ setup_wormlogic_vpn() {
   local machine_id_file="${XDG_CONFIG_HOME:-$HOME/.config}/dotfiles/machine-id"
 
   local machine_id
-  local local_dir
   local credential_dir
   local staged_conf
   local staged_public
-  local local_public_file
-  local source_conf
   local target_conf
-  local settings_file
   local capture_script
   local restore_script
+  local generated_conf
 
   local peer_private_key
   local peer_vpn_ip
   local vps_public_key
+  local input_vpn_ip
 
   echo "🔐 Setting up Wormlogic WireGuard peer..."
 
@@ -985,14 +1017,10 @@ setup_wormlogic_vpn() {
 
   machine_id="$(tr -d '\r\n' < "$machine_id_file")"
 
-  local_dir="$REPO_ROOT/local/wireguard"
   credential_dir="${XDG_CONFIG_HOME:-$HOME/.config}/dotfiles/wireguard"
   staged_conf="$credential_dir/${vpn_name}.conf"
   staged_public="$credential_dir/${vpn_name}.public-key"
-  local_public_file="$local_dir/${machine_id}.pub"
-  source_conf="$local_dir/$vpn_name.conf"
   target_conf="/etc/wireguard/$vpn_name.conf"
-  settings_file="$local_dir/$vpn_name.env"
   capture_script="$REPO_ROOT/scripts/capture-wireguard-credentials.sh"
   restore_script="$REPO_ROOT/scripts/restore-wireguard-credentials.sh"
 
@@ -1004,18 +1032,42 @@ setup_wormlogic_vpn() {
   require_credential_script "$capture_script"
   require_credential_script "$restore_script"
 
-  mkdir -p "$local_dir" "$credential_dir"
-  chmod 700 "$REPO_ROOT/local" "$local_dir" "$credential_dir"
+  mkdir -p "$credential_dir"
+  chmod 700 "$credential_dir"
 
   if [[ -f "$staged_conf" ]]; then
     peer_private_key="$(read_wireguard_private_key "$staged_conf")"
-    if [[ -z "$peer_private_key" ]]; then
-      echo "✗ Recovered WireGuard config has no PrivateKey: $staged_conf"
+    peer_vpn_ip="$(read_wireguard_interface_address "$staged_conf")"
+    vps_public_key="$(read_wireguard_peer_public_key "$staged_conf")"
+
+    if [[ -z "$peer_private_key" || -z "$peer_vpn_ip" || -z "$vps_public_key" ]]; then
+      echo "✗ Recovered WireGuard config is incomplete: $staged_conf"
+      echo "  Expected PrivateKey, Address, and peer PublicKey."
       exit 1
     fi
+
+    echo "✓ Reusing recovered WireGuard identity and peer settings"
   elif [[ "${WIREGUARD_GENERATE_NEW:-0}" -eq 1 ]]; then
     echo "• Generating new WireGuard identity for $machine_id..."
     peer_private_key="$(wg genkey)"
+
+    vps_public_key="${WORMLOGIC_VPS_PUBLIC_KEY:-}"
+    if [[ -z "$vps_public_key" ]]; then
+      echo
+      echo "Enter VPS WireGuard public key."
+      echo "Get it from the VPS with:"
+      echo "  sudo awk '/PrivateKey/ {print \$3}' /etc/wireguard/wg0.conf | wg pubkey"
+      echo
+      read -r -p "VPS public key: " vps_public_key
+    fi
+
+    local default_vpn_ip="10.8.0.3/32"
+    peer_vpn_ip="${WORMLOGIC_VPN_IP:-}"
+    if [[ -z "$peer_vpn_ip" ]]; then
+      echo
+      read -r -p "$EXPECTED_MACHINE VPN IP [$default_vpn_ip]: " input_vpn_ip
+      peer_vpn_ip="${input_vpn_ip:-$default_vpn_ip}"
+    fi
   else
     echo "✗ Reconciled WireGuard config is missing: $staged_conf"
     exit 1
@@ -1026,32 +1078,8 @@ setup_wormlogic_vpn() {
     exit 1
   fi
 
-  if [[ -f "$settings_file" ]]; then
-    # shellcheck disable=SC1090
-    source "$settings_file"
-  fi
-
-  if [[ -z "${WORMLOGIC_VPS_PUBLIC_KEY:-}" ]]; then
-    echo
-    echo "Enter VPS WireGuard public key."
-    echo "Get it from the VPS with:"
-    echo "  sudo awk '/PrivateKey/ {print \$3}' /etc/wireguard/wg0.conf | wg pubkey"
-    echo
-    read -r -p "VPS public key: " WORMLOGIC_VPS_PUBLIC_KEY
-  fi
-
-  local default_vpn_ip="10.8.0.3/32"
-  if [[ -z "${WORMLOGIC_VPN_IP:-}" ]]; then
-    echo
-    read -r -p "$EXPECTED_MACHINE VPN IP [$default_vpn_ip]: " input_vpn_ip
-    WORMLOGIC_VPN_IP="${input_vpn_ip:-$default_vpn_ip}"
-  fi
-
-  vps_public_key="$WORMLOGIC_VPS_PUBLIC_KEY"
-  peer_vpn_ip="$WORMLOGIC_VPN_IP"
-
-  if ! printf '%s' "$vps_public_key" | wg pubkey >/dev/null 2>&1; then
-    echo "✗ Invalid VPS public key"
+  if [[ ! "$vps_public_key" =~ ^[A-Za-z0-9+/]{43}=$ ]]; then
+    echo "✗ Invalid VPS WireGuard public key"
     exit 1
   fi
 
@@ -1060,13 +1088,9 @@ setup_wormlogic_vpn() {
     exit 1
   fi
 
-  {
-    echo "WORMLOGIC_VPS_PUBLIC_KEY='$vps_public_key'"
-    echo "WORMLOGIC_VPN_IP='$peer_vpn_ip'"
-  } > "$settings_file"
-  chmod 600 "$settings_file"
+  generated_conf="$(mktemp "$credential_dir/${vpn_name}.conf.XXXXXX")"
+  chmod 600 "$generated_conf"
 
-  echo "• Writing WireGuard config: $source_conf"
   {
     echo "[Interface]"
     echo "PrivateKey = $peer_private_key"
@@ -1077,16 +1101,18 @@ setup_wormlogic_vpn() {
     echo "Endpoint = $vps_host:51820"
     echo "AllowedIPs = $vpn_allowed_ips"
     echo "PersistentKeepalive = 25"
-  } > "$source_conf"
-  chmod 600 "$source_conf"
+  } > "$generated_conf"
 
-  echo "• Installing config to: $target_conf"
+  mv -f "$generated_conf" "$staged_conf"
+  chmod 600 "$staged_conf"
+
+  echo "• Installing WireGuard config: $target_conf"
   sudo install -d -m 700 /etc/wireguard
-  sudo install -m 600 "$source_conf" "$target_conf"
+  sudo install -m 600 "$staged_conf" "$target_conf"
 
-  # At this point the live config is authoritative: it contains the selected
-  # identity plus the current bootstrap's address, peer, endpoint, and routes.
-  # Capture that complete config, then restore staging to derive its public key.
+  # The installed config is now authoritative. Capture the complete live config,
+  # then restore the local staging copy and derived public key from encrypted
+  # recovery so all three representations agree.
   bash "$capture_script" --force
   bash "$restore_script" --force
 
@@ -1096,8 +1122,6 @@ setup_wormlogic_vpn() {
     exit 1
   fi
 
-  install -m 0644 "$staged_public" "$local_public_file"
-
   sudo systemctl enable --now "wg-quick@$vpn_name"
 
   WORMLOGIC_VPN_MACHINE_ID="$machine_id"
@@ -1105,10 +1129,10 @@ setup_wormlogic_vpn() {
   WORMLOGIC_VPN_IP="$peer_vpn_ip"
 
   echo "✓ Wormlogic WireGuard peer configured"
-  echo "  Machine:       $machine_id"
-  echo "  VPN IP:        $peer_vpn_ip"
-  echo "  Source config: $source_conf"
-  echo "  System config: $target_conf"
+  echo "  Machine:        $machine_id"
+  echo "  VPN IP:         $peer_vpn_ip"
+  echo "  Staging config: $staged_conf"
+  echo "  System config:  $target_conf"
 }
 
 # --------------------------------------------------

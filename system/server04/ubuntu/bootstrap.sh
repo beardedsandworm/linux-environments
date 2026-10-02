@@ -7,9 +7,9 @@ set -euo pipefail
 # --------------------------------------------------
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
 MACHINE_ID_FILE="${XDG_CONFIG_HOME:-$HOME/.config}/dotfiles/machine-id"
-EXPECTED_MACHINE="${1:-server02}"
+EXPECTED_MACHINE="${1:-server04}"
 EXPECTED_OS="ubuntu"
-MACHINE_LABEL="Dell Tower"
+MACHINE_LABEL="Chapterhouse"
 
 # --------------------------------------------------
 # Verify machine identity
@@ -203,31 +203,6 @@ Signed-By: /etc/apt/keyrings/docker.asc
 EOF
 
   echo "✓ Docker APT repository configured"
-}
-
-# --------------------------------------------------
-# Configure NVIDIA Container Toolkit APT repository
-# - NVIDIA GPU drivers remain sourced from Ubuntu's repositories/apt.txt
-# - this repository provides nvidia-container-toolkit for Docker GPU access
-# - package metadata is refreshed later by initial_update()
-# --------------------------------------------------
-setup_nvidia_container_repo() {
-  local keyring="/usr/share/keyrings/nvidia-container-toolkit-keyring.gpg"
-  local list_file="/etc/apt/sources.list.d/nvidia-container-toolkit.list"
-
-  echo "🎮 Configuring NVIDIA Container Toolkit APT repository..."
-
-  sudo install -m 0755 -d /usr/share/keyrings /etc/apt/sources.list.d
-
-  curl -fsSL https://nvidia.github.io/libnvidia-container/gpgkey | \
-    sudo gpg --dearmor --yes -o "$keyring"
-  sudo chmod 0644 "$keyring"
-
-  curl -fsSL https://nvidia.github.io/libnvidia-container/stable/deb/nvidia-container-toolkit.list | \
-    sed "s#deb https://#deb [signed-by=$keyring] https://#g" | \
-    sudo tee "$list_file" >/dev/null
-
-  echo "✓ NVIDIA Container Toolkit APT repository configured"
 }
 
 # --------------------------------------------------
@@ -959,10 +934,12 @@ install_starship() {
 
 # --------------------------------------------------
 # Setup Wormlogic WireGuard peer
-# - consumes the complete config staged by recovery for the existing identity
+# - consumes the complete config staged by recovery for an existing identity
+# - keeps all local staging outside the repository
 # - if no identity exists anywhere, generates a new private key once
+# - recovered Address and VPS peer key are authoritative for existing peers
 # - after final configuration, captures the complete live config and restores
-#   staging so repository, live state, and derived public key agree
+#   staging so encrypted recovery, live state, and derived public key agree
 # --------------------------------------------------
 read_wireguard_private_key() {
   local config_file="$1"
@@ -1086,7 +1063,7 @@ setup_wormlogic_vpn() {
       read -r -p "VPS public key: " vps_public_key
     fi
 
-    local default_vpn_ip="10.8.0.4/32"
+    local default_vpn_ip="10.8.0.6/32"
     peer_vpn_ip="${WORMLOGIC_VPN_IP:-}"
     if [[ -z "$peer_vpn_ip" ]]; then
       echo
@@ -1327,7 +1304,6 @@ main() {
   prepare_ubuntu_repos
   ensure_nala
   setup_docker_repo
-  setup_nvidia_container_repo
   initial_update
   install_packages
   setup_age_and_sops
@@ -1362,6 +1338,7 @@ main() {
   echo "   - dotfiles-change-check → local dotfiles drift awareness (daily)"
   echo "   - disk-space-check      → local disk usage warning (daily)"
   echo "   - heartbeat             → device online signal (daily)"
+  echo "   - remote-unlock         → SSH unlock via initramfs (port 2222)"
   echo
 
   prompt_reboot

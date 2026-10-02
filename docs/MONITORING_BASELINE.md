@@ -3,7 +3,7 @@
 **Repository:** `linux-environments`
 **Scope:** Verified monitoring observations followed by the historical host-monitoring baseline and design goals. Service-owned monitors remain authoritative in their own repositories.
 
-## Verified observations — 2026-09-28
+## Verified observations and current discrepancies — 2026-10-02
 
 - IX runs `internal-dns-monitor.timer`; its sampled service execution returned `Result=success`, `ExecMainStatus=0`, with a healthy/sent journal result. Source authority is `llm-services/services/internal-dns-monitor`, not this host-bootstrap repository.
 - The IX monitor is configured for Pi-holes `10.42.20.10` and `.11`. Its `FRESH_RECURSION_SUFFIX` is empty, so its healthy result does not include the optional fresh-recursion diagnostic.
@@ -11,7 +11,8 @@
 - The Heighliner n8n operations REST API returned workflow/execution data; sampled recent executions succeeded. This is not proof of Discord notification delivery. The separate agent-side n8n MCP OAuth connection required renewed authorization at assessment time.
 - Home Assistant exposes current Midway/Pi-hole telemetry. A restored/unavailable legacy `WG_GATEWAY` entity was also present; that entity alone does not establish a tunnel outage.
 - Beszel hub/agents were visible, but full authenticated hub administration, application backup coverage and restore success were not validated.
-- Shai-Hulud, Chapterhouse and Caladan are planned, not deployed: their future addresses are not monitoring availability targets yet. Current network topology is in [NETWORK.md](NETWORK.md).
+- Shai-Hulud remains planned. Caladan (`server03`) and Chapterhouse (`server04`) now have prepared host/VPN bootstrap paths but are not deployed availability targets yet. Current network topology is in [NETWORK.md](NETWORK.md).
+- `docker-services`, `vps-services`, and `llm-services` image-update checks currently violate the stated **silence is success** rule by sending a Discord success notification when no image updates are available. Those scripts should log the no-change result locally and notify only when an update, failure, or other actionable condition exists.
 
 ## Historical baseline and design goals
 

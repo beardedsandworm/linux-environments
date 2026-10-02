@@ -596,23 +596,28 @@ Identify every secret file encrypted to that recipient.
 Example:
 
 ```text
-docker-services age identity
+Arrakis / server01 age identity
         ↓
-All SOPS secrets encrypted for docker-services
+Every current secret encrypted to the server01 recipient
+        ↓
+Potentially spans machine-specific recovery/service secrets
+across repositories
 ```
 
 Those secrets should now be treated as potentially exposed.
 
-An identity scoped only to `docker-services` should not automatically compromise:
+The current trust boundary is **per machine identity**, not per repository. A compromised `server01` identity should not automatically compromise:
 
 ```text
-llm-services
-vps-services
+server02 / IX
+server03 / Caladan
+server04 / Chapterhouse
+vps01 / Heighliner
 ```
 
-if those domains use independent identities.
+when those machines use independent age identities/recipients.
 
-This is one reason to maintain separate cryptographic trust domains.
+This is one reason to maintain separate per-machine cryptographic trust domains.
 
 ---
 
@@ -638,11 +643,21 @@ Use the normal credential-rotation workflow for each.
 
 ## Step 3 — Generate a new `age` identity
 
-Generate a replacement using the standard `age` tooling.
+Generate a replacement machine identity using the standard `age` tooling.
 
-The new private identity should receive a unique strong passphrase.
+The live identity remains the machine's normal age key:
 
-Store its recovery information in the designated break-glass KeePassXC vault.
+```text
+~/.config/sops/age/keys.txt
+```
+
+Create a new encrypted recovery artifact through the normal machine credential-capture workflow, for example:
+
+```text
+linux-environments/secrets/<machine>/age-key.age
+```
+
+Protect the recovery artifact with the machine's recovery passphrase and store the required break-glass recovery information in the designated KeePassXC vault.
 
 ---
 
@@ -797,29 +812,31 @@ Escalate to Root-of-Trust Recovery
 
 ## Example D — `age` Private Identity Exposed
 
-The private identity used by `docker-services` is copied to an untrusted system.
+The private age identity for Arrakis (`server01`) is copied to an untrusted system.
 
 ### Recovery
 
 ```text
-Assume docker-services SOPS contents readable
+Assume every secret encrypted to the server01 recipient is readable
         ↓
-Inventory all credentials encrypted to that identity
+Inventory affected server01 secrets across repositories
         ↓
 Rotate those credentials
         ↓
-Generate new docker-services age identity
+Generate a new server01 age identity
         ↓
-Store new recovery material in KeePassXC
+Create a new encrypted age-key recovery artifact
         ↓
-Update SOPS recipient
+Store required recovery information in KeePassXC
+        ↓
+Update affected SOPS recipients
         ↓
 Re-encrypt clean secrets
         ↓
-Retire compromised identity
+Retire the compromised server01 identity
 ```
 
-Other secret domains using independent identities remain unaffected unless evidence indicates otherwise.
+Other machine secret domains using independent identities remain unaffected unless evidence indicates otherwise.
 
 ---
 

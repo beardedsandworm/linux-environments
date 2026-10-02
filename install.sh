@@ -28,13 +28,13 @@ detect_os() {
 # --------------------------------------------------
 machine_label() {
   case "$1" in
-  laptop01) echo "Dell Precision" ;;
-  laptop02) echo "HP Envy" ;;
-  desktop01) echo "Covid PC" ;;
-  server01) echo "Docker Server" ;;
-  server02) echo "Dell Tower" ;;
-  server03) echo "Terramaster" ;;
-  vps01) echo "Wormlogic VPS" ;;
+  laptop01) echo "Archtop" ;;
+  laptop02) echo "Ubuntop" ;;
+  server04) echo "Chapterhouse" ;;
+  server01) echo "Arrakis" ;;
+  server02) echo "Ix" ;;
+  server03) echo "Caladan" ;;
+  vps01) echo "Heighliner" ;;
   *) echo "Unknown Machine" ;;
   esac
 }
@@ -50,13 +50,13 @@ prompt_machine() {
   while true; do
     {
       echo " Select target machine:"
-      echo " 1) Dell Precision"
-      echo " 2) HP Envy"
-      echo " 3) Covid PC"
-      echo " 4) Docker Server"
-      echo " 5) Wormlogic VPS"
-      echo " 6) Dell Tower"
-      echo " 7) Terramaster"
+      echo " 1) Archtop"
+      echo " 2) Ubuntop"
+      echo " 3) Chapterhouse"
+      echo " 4) Arrakis"
+      echo " 5) Heighliner"
+      echo " 6) Ix"
+      echo " 7) Caladan"
       echo " 0) Exit"
     } >&2
 
@@ -73,7 +73,7 @@ prompt_machine() {
       return 0
       ;;
     3)
-      echo "desktop01"
+      echo "server04"
       return 0
       ;;
     4)

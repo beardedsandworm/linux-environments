@@ -29,9 +29,9 @@ Application stacks are intentionally kept in their own repositories.
 ## ⚡ Mental Model
 
 ```text
-Recover identity
+Prepare host + install prerequisites
       ↓
-Rebuild host
+Recover machine identity
       ↓
 Restore credentials
       ↓
@@ -59,16 +59,19 @@ Define → Recover → Apply → Observe → Correct → Capture
 
 ## 🖥️ Managed Systems
 
-| Machine | ID | OS | Role |
-| --- | --- | --- | --- |
-| 💼 Dell Precision | `laptop01` | Arch | Primary workstation / administration |
-| 💻 HP Envy | `laptop02` | Ubuntu | Secondary workstation |
-| 🐳 Arrakis | `server01` | Ubuntu | Primary Docker host |
-| 🧠 IX | `server02` | Ubuntu | LLM / agent host |
-| 💾 Caladan | `server03` | Ubuntu | Storage / services host |
-| 🚀 Heighliner | `vps01` | Ubuntu | Public VPS / network edge |
+| Machine | ID | OS | Role | Status |
+| --- | --- | --- | --- | --- |
+| 💼 Archtop | `laptop01` | Arch | Primary workstation / administration | Deployed |
+| 💻 Ubuntop | `laptop02` | Ubuntu | Secondary workstation | Deployed |
+| 🐳 Arrakis | `server01` | Ubuntu | Primary Docker host | Deployed |
+| 🧠 IX | `server02` | Ubuntu | LLM / agent host | Deployed |
+| 💾 Caladan | `server03` | Ubuntu | Storage / services host | Prepared / staged |
+| 🎮 Chapterhouse | `server04` | Ubuntu | Shared gaming / streaming / game-service host | Prepared / staged |
+| 🚀 Heighliner | `vps01` | Ubuntu | Public VPS / network edge | Deployed |
 
-Each machine has its own bootstrap, host configuration, encrypted recovery state and machine identity.
+Each deployed or prepared machine has its own bootstrap path, host configuration, encrypted recovery model and machine identity.
+
+Chapterhouse occupies the `server04` staging path.
 
 ---
 
@@ -142,11 +145,11 @@ clone linux-environments
         ↓
 run install/bootstrap
         ↓
+prepare repositories + install prerequisite packages
+        ↓
 recover or establish machine age identity
         ↓
 restore SSH + WireGuard credentials
-        ↓
-install packages
         ↓
 apply host configuration + dotfiles
         ↓
@@ -187,6 +190,7 @@ laptop02
 server01
 server02
 server03
+server04
 vps01
 ```
 
@@ -332,17 +336,20 @@ The repository should not generate plaintext WireGuard state into arbitrary repo
 
 The Wormlogic WireGuard network provides remote connectivity between managed systems.
 
-Current host identities include:
+Configured Wormlogic VPN identities include:
 
 ```text
-Heighliner   10.8.0.1
-Midway       10.8.0.2
-Arrakis      10.8.0.3
-IX           10.8.0.4
-Caladan      10.8.0.5
-laptop01     10.8.0.10
-laptop02     10.8.0.11
+Heighliner    10.8.0.1
+Midway        10.8.0.2
+Arrakis       10.8.0.3
+IX            10.8.0.4
+Caladan       10.8.0.5   # prepared / staged
+Chapterhouse  10.8.0.6   # prepared / staged
+laptop01      10.8.0.10
+laptop02      10.8.0.11
 ```
+
+Prepared assignments are part of the recovery/bootstrap plan; they do not imply that the peer is already enrolled on Heighliner or currently reachable.
 
 The home network is routed as:
 
@@ -474,6 +481,8 @@ Current major service repositories include:
 | Heighliner | `vps-services` | VPS-hosted services |
 | Shai-Hulud | `wormlogic-gitops` | Talos / Kubernetes / Flux state |
 
+Caladan and Chapterhouse are currently staged at the host layer; their final service-repository ownership should be documented when those deployments become active.
+
 The desired recovery pattern is:
 
 ```text
@@ -531,10 +540,10 @@ cd linux-environments
 From there, the system should be able to:
 
 1. identify the machine
-2. establish or recover its age identity
-3. recover SSH credentials
-4. recover host networking
-5. install the declared software baseline
+2. prepare package repositories and install prerequisite software
+3. establish or recover its age identity
+4. recover SSH credentials
+5. recover host networking
 6. apply user and host configuration
 7. install monitoring and maintenance timers
 8. prepare repository authentication
