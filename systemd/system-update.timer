@@ -2,8 +2,9 @@
 Description=Run system update daily
 
 [Timer]
-OnBootSec=15m
-OnUnitActiveSec=1d
+OnCalendar=*-*-* 03:00:00
+RandomizedDelaySec=15m
+AccuracySec=1m
 Persistent=true
 
 [Install]

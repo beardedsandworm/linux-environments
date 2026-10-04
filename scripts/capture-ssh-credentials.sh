@@ -135,15 +135,56 @@ USER_DEST="$DEST_ROOT/user"
 HOST_DEST="$DEST_ROOT/host"
 mkdir -p "$USER_DEST" "$HOST_DEST"
 
-if (( EUID == 0 )); then
-  ROOT=()
-else
+ROOT_HELPER="${CREDENTIAL_CAPTURE_ROOT_HELPER:-/usr/local/libexec/wormlogic/credential-capture-root}"
+
+if (( EUID != 0 )); then
   command -v sudo >/dev/null 2>&1 || {
     echo "ERROR: sudo is required to read OpenSSH host private keys." >&2
     exit 1
   }
-  ROOT=(sudo)
+
+  [[ -x "$ROOT_HELPER" ]] || {
+    echo "ERROR: credential-capture helper is not installed: $ROOT_HELPER" >&2
+    exit 1
+  }
+
+  sudo -n "$ROOT_HELPER" validate || {
+    echo "ERROR: noninteractive credential-capture authorization is unavailable." >&2
+    exit 1
+  }
 fi
+
+host_key_list() {
+  if (( EUID == 0 )); then
+    find "$SSH_HOST_DIR" \
+      -maxdepth 1 \
+      -type f \
+      -name 'ssh_host_*_key' \
+      -print0
+  else
+    sudo -n "$ROOT_HELPER" ssh-list
+  fi
+}
+
+host_key_hash() {
+  local source="$1"
+
+  if (( EUID == 0 )); then
+    sha256sum -- "$source" | awk '{print $1}'
+  else
+    sudo -n "$ROOT_HELPER" ssh-hash "$(basename -- "$source")"
+  fi
+}
+
+host_key_cat() {
+  local source="$1"
+
+  if (( EUID == 0 )); then
+    cat -- "$source"
+  else
+    sudo -n "$ROOT_HELPER" ssh-cat "$(basename -- "$source")"
+  fi
+}
 
 is_private_key_stream() {
   local first_line
@@ -208,7 +249,12 @@ encrypt_file_atomic() {
     fi
 
     if (( use_sudo )); then
-      if "${ROOT[@]}" cmp -s -- "$source" "$encrypted_plain"; then
+      local source_hash existing_hash
+
+      source_hash="$(host_key_hash "$source")"
+      existing_hash="$(sha256sum -- "$encrypted_plain" | awk '{print $1}')"
+
+      if [[ "$source_hash" == "$existing_hash" ]]; then
         rm -f -- "$encrypted_plain"
         trap - RETURN
         echo "unchanged: $dest"
@@ -237,12 +283,13 @@ encrypt_file_atomic() {
   trap 'rm -f -- "$tmp"' RETURN
 
   if (( use_sudo )); then
-    "${ROOT[@]}" cat -- "$source" \
+    host_key_cat "$source" \
       | sops encrypt \
           --age "$AGE_RECIPIENT" \
           --input-type binary \
           --output-type json \
           /dev/stdin > "$tmp"
+
   else
     cat -- "$source" \
       | sops encrypt \
@@ -278,9 +325,8 @@ fi
 
 # OpenSSH host private keys are conventionally root-owned and have predictable
 # names. Public .pub companions do not match this glob.
-if "${ROOT[@]}" test -d "$SSH_HOST_DIR"; then
-  while IFS= read -r path; do
-    [[ -n "$path" ]] || continue
+if [[ -d "$SSH_HOST_DIR" ]] || (( EUID != 0 )); then
+  while IFS= read -r -d '' path; do
     name="$(basename -- "$path")"
 
     [[ "$name" =~ ^ssh_host_[A-Za-z0-9_.-]+_key$ ]] || {
@@ -290,7 +336,7 @@ if "${ROOT[@]}" test -d "$SSH_HOST_DIR"; then
 
     encrypt_file_atomic "$path" "$HOST_DEST/$name.enc" 1
     ((captured_host += 1))
-  done < <("${ROOT[@]}" find "$SSH_HOST_DIR" -maxdepth 1 -type f -name 'ssh_host_*_key' -print 2>/dev/null | sort)
+  done < <(host_key_list | sort -z)
 fi
 
 if (( captured_user == 0 && captured_host == 0 )); then

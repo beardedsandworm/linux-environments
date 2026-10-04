@@ -992,6 +992,41 @@ configure_system() {
 }
 
 # --------------------------------------------------
+# Install root-owned helpers used by scheduled user services
+# - credential capture must be installed before credential reconciliation
+# - system update helper must be installed before system-update.timer is enabled
+# --------------------------------------------------
+install_automation_privilege_helpers() {
+  local credential_helper_installer="$REPO_ROOT/scripts/install-credential-capture-helper.sh"
+  local update_helper_installer="$REPO_ROOT/scripts/install-system-update-helper.sh"
+
+  echo "🔐 Installing scheduled-automation privilege helpers..."
+
+  for installer in "$credential_helper_installer" "$update_helper_installer"; do
+    if [[ ! -x "$installer" ]]; then
+      echo "✗ Missing or non-executable automation helper installer:"
+      echo "  $installer"
+      exit 1
+    fi
+  done
+
+  "$credential_helper_installer"
+  "$update_helper_installer"
+
+  sudo -n /usr/local/libexec/wormlogic/credential-capture-root validate >/dev/null || {
+    echo "✗ Credential-capture noninteractive privilege validation failed"
+    exit 1
+  }
+
+  sudo -n /usr/local/libexec/wormlogic/system-update-root validate >/dev/null || {
+    echo "✗ System-update noninteractive privilege validation failed"
+    exit 1
+  }
+
+  echo "✓ Scheduled-automation privilege helpers installed"
+}
+
+# --------------------------------------------------
 # Install and enable package export service/timer
 # --------------------------------------------------
 setup_package_export() {
@@ -1010,6 +1045,7 @@ setup_package_export() {
 
 # --------------------------------------------------
 # Install and enable scheduled credential capture
+# - privileged reads are delegated to the installed root-owned helper
 # --------------------------------------------------
 setup_credential_capture() {
   local service_src="$REPO_ROOT/systemd/credential-capture.service"
@@ -1018,11 +1054,18 @@ setup_credential_capture() {
 
   echo "⚙ Setting up scheduled credential capture..."
 
-  if [[ ! -f "$service_src" || ! -f "$timer_src" ]]; then
-    CREDENTIAL_CAPTURE_CONFIGURED=0
-    echo "⚠ credential-capture.service/timer not present yet; skipping"
-    return 0
-  fi
+  for unit in "$service_src" "$timer_src"; do
+    if [[ ! -f "$unit" ]]; then
+      echo "✗ Required credential-capture unit is missing:"
+      echo "  $unit"
+      exit 1
+    fi
+  done
+
+  sudo -n /usr/local/libexec/wormlogic/credential-capture-root validate >/dev/null || {
+    echo "✗ Credential-capture privilege helper is not ready"
+    exit 1
+  }
 
   mkdir -p "$user_systemd_dir"
   cp "$service_src" "$user_systemd_dir/"
@@ -1030,7 +1073,6 @@ setup_credential_capture() {
 
   systemctl --user daemon-reload
   systemctl --user enable --now credential-capture.timer
-  CREDENTIAL_CAPTURE_CONFIGURED=1
 
   echo "✓ credential-capture.timer enabled"
 }
@@ -1039,11 +1081,27 @@ setup_credential_capture() {
 # Install and enable shared system update service/timer
 # --------------------------------------------------
 setup_system_update() {
+  local service_src="$REPO_ROOT/systemd/system-update.service"
+  local timer_src="$REPO_ROOT/systemd/system-update.timer"
+
   echo "⚙ Setting up system update service and timer..."
 
+  for unit in "$service_src" "$timer_src"; do
+    if [[ ! -f "$unit" ]]; then
+      echo "✗ Required system-update unit is missing:"
+      echo "  $unit"
+      exit 1
+    fi
+  done
+
+  sudo -n /usr/local/libexec/wormlogic/system-update-root validate >/dev/null || {
+    echo "✗ System-update privilege helper is not ready"
+    exit 1
+  }
+
   mkdir -p "$HOME/.config/systemd/user"
-  cp "$REPO_ROOT/systemd/system-update.service" "$HOME/.config/systemd/user/"
-  cp "$REPO_ROOT/systemd/system-update.timer" "$HOME/.config/systemd/user/"
+  cp "$service_src" "$HOME/.config/systemd/user/"
+  cp "$timer_src" "$HOME/.config/systemd/user/"
 
   systemctl --user daemon-reload
   systemctl --user enable --now system-update.timer
@@ -1268,7 +1326,7 @@ setup_wormlogic_vpn() {
       echo
       echo "Missing Wormlogic VPS WireGuard public key."
       echo "Get it with:"
-      echo "  ssh lightweight@vpn.wormlogic.com 'sudo cat /etc/wireguard/publickey'"
+      echo "  ssh lightweight@vpn.wormlogic.com 'sudo wg show wg0 public-key'"
       echo
       read -r -p "VPS WireGuard public key: " vps_public_key
     fi
@@ -1455,17 +1513,16 @@ show_summary() {
     echo " Interface: wormlogic"
     echo " VPN IP: ${WORMLOGIC_VPN_IP:-unknown}"
     echo
-    echo "⚠ Action required on VPS:"
+    echo "⚠ Action required on Heighliner:"
     echo
-    echo "Add this peer to /etc/wireguard/wg0.conf:"
+    echo "Add this peer under system/vps01/ubuntu/wireguard/peers/:"
     echo
     echo " # ${WORMLOGIC_VPN_MACHINE_ID:-unknown}"
     echo " [Peer]"
     echo " PublicKey = $WORMLOGIC_VPN_PUBLIC_KEY"
     echo " AllowedIPs = ${WORMLOGIC_VPN_IP:-REPLACE_WITH_CLIENT_IP}"
     echo
-    echo "Then restart WireGuard on the VPS:"
-    echo " sudo systemctl restart wg-quick@wg0"
+    echo "Then rerun Heighliner's WireGuard setup/configure-system reconciliation."
   fi
   echo
 }
@@ -1493,6 +1550,13 @@ main() {
   initial_update
   ensure_package_ecosystems
   install_packages
+
+  # Scheduled capture/update are user services, but their privileged operations
+  # are delegated to root-owned helpers. Install those helpers before credential
+  # reconciliation because the capture scripts require the noninteractive
+  # credential-capture helper.
+  install_automation_privilege_helpers
+
   setup_age_and_sops
   reconcile_ssh_credentials
   configure_linux_environments_git_access
@@ -1519,11 +1583,7 @@ main() {
   echo
   echo "📊 Services configured:"
   echo "   - package-export        → state tracking (runs now + daily)"
-  if [[ "${CREDENTIAL_CAPTURE_CONFIGURED:-0}" -eq 1 ]]; then
-    echo "   - credential-capture    → encrypted credential state capture (scheduled)"
-  else
-    echo "   - credential-capture    → pending service/timer unit files"
-  fi
+  echo "   - credential-capture    → encrypted credential recovery capture"
   echo "   - system-update         → system maintenance (scheduled)"
   echo "   - repo-update-check     → remote update awareness (daily)"
   echo "   - dotfiles-change-check → local dotfiles drift awareness (daily)"

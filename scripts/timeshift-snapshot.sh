@@ -1,15 +1,11 @@
 #!/usr/bin/env bash
-
 set -euo pipefail
 
-LOG_PREFIX="[timeshift-snapshot]"
+ROOT_HELPER="/usr/local/libexec/wormlogic/system-update-root"
 
-if ! command -v timeshift >/dev/null 2>&1; then
-  echo "$LOG_PREFIX timeshift not installed, skipping"
-  exit 0
-fi
+[[ -x "$ROOT_HELPER" ]] || {
+  echo "ERROR: missing privileged update helper: $ROOT_HELPER" >&2
+  exit 1
+}
 
-echo "$LOG_PREFIX Creating Timeshift snapshot..."
-sudo timeshift --create --comments "scheduled snapshot" --tags W
-
-echo "$LOG_PREFIX Snapshot complete"
+sudo -n "$ROOT_HELPER" timeshift-weekly

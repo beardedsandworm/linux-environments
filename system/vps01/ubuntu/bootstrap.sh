@@ -556,31 +556,25 @@ has_repo_wireguard_configs() {
 generate_initial_vps_wireguard_configs() {
   local capture_script="$1"
   local restore_script="$2"
-  local temp_dir iface private_key
+  local iface private_key
   local -a generated_interfaces=(wg0 wg-pvp)
 
-  temp_dir="$(mktemp -d)"
-  trap 'rm -rf -- "$temp_dir"' RETURN
-  chmod 700 "$temp_dir"
+  # wg0 and wg-pvp are Heighliner-owned identities. Seed minimal configs in the
+  # real privileged WireGuard directory so the normal credential-capture helper
+  # can read them. configure-system.sh will later build the final production
+  # configs around these preserved identities.
+  sudo install -d -m 700 /etc/wireguard
 
-  # wg0 and wg-pvp are Heighliner-owned identities. Minimal configs are enough
-  # for the host setup scripts to recover those identities and construct their
-  # final repo-defined configurations. wg-proton is provider-issued and cannot
-  # be generated locally.
   for iface in "${generated_interfaces[@]}"; do
     private_key="$(wg genkey)"
-    {
-      echo "[Interface]"
-      echo "PrivateKey = $private_key"
-    } > "$temp_dir/$iface.conf"
-    chmod 600 "$temp_dir/$iface.conf"
+
+    sudo install -m 600 /dev/null "/etc/wireguard/$iface.conf"
+    printf '[Interface]\nPrivateKey = %s\n' "$private_key" |
+      sudo tee "/etc/wireguard/$iface.conf" >/dev/null
   done
 
-  WIREGUARD_CONFIG_DIR="$temp_dir" bash "$capture_script"
+  bash "$capture_script" --force
   bash "$restore_script" --force
-
-  rm -rf -- "$temp_dir"
-  trap - RETURN
 
   echo "✓ Generated and captured Heighliner-owned identities: wg0, wg-pvp"
   echo "⚠ wg-proton is provider-issued and cannot be generated locally."
@@ -726,6 +720,41 @@ refresh_wireguard_recovery() {
 }
 
 # --------------------------------------------------
+# Install root-owned helpers used by scheduled user services
+# - capture scripts require the credential helper before credential reconciliation
+# - system updates require the update helper before the timer is enabled
+# --------------------------------------------------
+install_automation_privilege_helpers() {
+  local credential_helper_installer="$REPO_ROOT/scripts/install-credential-capture-helper.sh"
+  local update_helper_installer="$REPO_ROOT/scripts/install-system-update-helper.sh"
+
+  echo "🔐 Installing scheduled-automation privilege helpers..."
+
+  for installer in "$credential_helper_installer" "$update_helper_installer"; do
+    if [[ ! -x "$installer" ]]; then
+      echo "✗ Missing or non-executable automation helper installer:"
+      echo "  $installer"
+      exit 1
+    fi
+  done
+
+  "$credential_helper_installer"
+  "$update_helper_installer"
+
+  sudo -n /usr/local/libexec/wormlogic/credential-capture-root validate >/dev/null || {
+    echo "✗ Credential-capture noninteractive privilege validation failed"
+    exit 1
+  }
+
+  sudo -n /usr/local/libexec/wormlogic/system-update-root validate >/dev/null || {
+    echo "✗ System-update noninteractive privilege validation failed"
+    exit 1
+  }
+
+  echo "✓ Scheduled-automation privilege helpers installed"
+}
+
+# --------------------------------------------------
 # Install and enable shared user services and timers
 # - common maintenance/monitoring units are copied from systemd/
 # - unavailable optional units are reported and skipped explicitly
@@ -763,7 +792,29 @@ setup_package_export() {
 }
 
 setup_system_update() {
+  local service_source="$REPO_ROOT/systemd/system-update.service"
+  local timer_source="$REPO_ROOT/systemd/system-update.timer"
+
   echo "⚙ Setting up system update service and timer..."
+
+  if ! user_systemd_available; then
+    echo "✗ User systemd is required for scheduled system updates"
+    exit 1
+  fi
+
+  for unit in "$service_source" "$timer_source"; do
+    if [[ ! -f "$unit" ]]; then
+      echo "✗ Required system-update unit is missing:"
+      echo "  $unit"
+      exit 1
+    fi
+  done
+
+  sudo -n /usr/local/libexec/wormlogic/system-update-root validate >/dev/null || {
+    echo "✗ System-update privilege helper is not ready"
+    exit 1
+  }
+
   setup_user_service_pair "system-update"
 }
 
@@ -784,14 +835,25 @@ setup_credential_capture() {
 
   echo "⚙ Setting up scheduled credential capture..."
 
-  if [[ ! -f "$service_source" || ! -f "$timer_source" ]]; then
-    CREDENTIAL_CAPTURE_CONFIGURED=0
-    echo "⚠ credential-capture.service/timer not present yet; skipping"
-    return 0
+  if ! user_systemd_available; then
+    echo "✗ User systemd is required for scheduled credential capture"
+    exit 1
   fi
 
+  for unit in "$service_source" "$timer_source"; do
+    if [[ ! -f "$unit" ]]; then
+      echo "✗ Required credential-capture unit is missing:"
+      echo "  $unit"
+      exit 1
+    fi
+  done
+
+  sudo -n /usr/local/libexec/wormlogic/credential-capture-root validate >/dev/null || {
+    echo "✗ Credential-capture privilege helper is not ready"
+    exit 1
+  }
+
   setup_user_service_pair "credential-capture"
-  CREDENTIAL_CAPTURE_CONFIGURED=1
 }
 
 
@@ -886,11 +948,7 @@ show_summary() {
   echo "  - repo-update-check     → remote update awareness"
   echo "  - dotfiles-change-check → local dotfiles drift awareness"
   echo "  - disk-space-check      → local disk usage warning"
-  if [[ "${CREDENTIAL_CAPTURE_CONFIGURED:-0}" -eq 1 ]]; then
-    echo "  - credential-capture    → encrypted credential state capture"
-  else
-    echo "  - credential-capture    → pending service/timer unit files"
-  fi
+  echo "  - credential-capture    → encrypted credential recovery capture"
   echo
   echo "GitHub deploy key for linux-environments:"
   echo "  Repository: linux-environments"
@@ -955,6 +1013,11 @@ main() {
   initial_update
   install_packages
   install_docker_engine
+
+  # Scheduled capture/update are user services, but privileged operations are
+  # delegated to root-owned helpers. Install them before SSH/WireGuard
+  # reconciliation because the capture scripts require the credential helper.
+  install_automation_privilege_helpers
 
   # Recover the device's existing age identity before any host secrets are
   # decrypted. This is the linchpin for disaster recovery.

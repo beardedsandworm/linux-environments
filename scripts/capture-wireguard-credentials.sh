@@ -134,20 +134,46 @@ DEST_DIR="$REPO_ROOT/secrets/$MACHINE_ID/wireguard"
 mkdir -p "$DEST_DIR"
 chmod 700 "$DEST_DIR" 2>/dev/null || true
 
-if (( EUID == 0 )); then
-  ROOT=()
-else
+ROOT_HELPER="${CREDENTIAL_CAPTURE_ROOT_HELPER:-/usr/local/libexec/wormlogic/credential-capture-root}"
+
+if (( EUID != 0 )); then
   command -v sudo >/dev/null 2>&1 || {
     echo "ERROR: sudo is required to read WireGuard configuration files." >&2
     exit 1
   }
-  ROOT=(sudo)
+
+  [[ -x "$ROOT_HELPER" ]] || {
+    echo "ERROR: credential-capture helper is not installed: $ROOT_HELPER" >&2
+    exit 1
+  }
+
+  sudo -n "$ROOT_HELPER" validate || {
+    echo "ERROR: noninteractive credential-capture authorization is unavailable." >&2
+    exit 1
+  }
 fi
 
-if ! "${ROOT[@]}" test -d "$WIREGUARD_CONFIG_DIR"; then
-  echo "ERROR: WireGuard config directory does not exist: $WIREGUARD_CONFIG_DIR" >&2
-  exit 1
-fi
+wireguard_list() {
+  if (( EUID == 0 )); then
+    find "$WIREGUARD_CONFIG_DIR" \
+      -maxdepth 1 \
+      -type f \
+      -name '*.conf' \
+      -print0
+  else
+    sudo -n "$ROOT_HELPER" wireguard-list
+  fi
+}
+
+wireguard_cat() {
+  local source="$1"
+
+  if (( EUID == 0 )); then
+    cat -- "$source"
+  else
+    sudo -n "$ROOT_HELPER" wireguard-cat "$(basename -- "$source")"
+  fi
+}
 
 sops_decrypt_hash() {
   local source="$1"
@@ -163,7 +189,12 @@ sops_decrypt_hash() {
 
 source_hash() {
   local source="$1"
-  "${ROOT[@]}" sha256sum "$source" | awk '{print $1}'
+
+  if (( EUID == 0 )); then
+    sha256sum -- "$source" | awk '{print $1}'
+  else
+    sudo -n "$ROOT_HELPER" wireguard-hash "$(basename -- "$source")"
+  fi
 }
 
 encrypt_config_atomic() {
@@ -196,7 +227,7 @@ encrypt_config_atomic() {
   tmp="$(mktemp "${dest}.tmp.XXXXXX")"
   trap 'rm -f -- "$tmp"' RETURN
 
-  "${ROOT[@]}" cat -- "$source" |
+  wireguard_cat "$source" |
     sops encrypt \
       --age "$AGE_RECIPIENT" \
       --input-type binary \
@@ -210,13 +241,8 @@ encrypt_config_atomic() {
   echo "captured:  $dest"
 }
 
-mapfile -t CONFIG_FILES < <(
-  "${ROOT[@]}" find "$WIREGUARD_CONFIG_DIR" \
-    -maxdepth 1 \
-    -type f \
-    -name '*.conf' \
-    -print 2>/dev/null |
-  sort
+mapfile -d '' -t CONFIG_FILES < <(
+  wireguard_list | sort -z
 )
 
 if ((${#CONFIG_FILES[@]} == 0)); then

@@ -14,7 +14,35 @@ case "$action" in
     exit 0
     ;;
 
-  timeshift)
+  timeshift-pre-update)
+    command -v timeshift >/dev/null 2>&1 || {
+      echo "ERROR: timeshift is not installed" >&2
+      exit 1
+    }
+
+    timeshift \
+      --create \
+      --comments "pre-system-update" \
+      --tags O
+
+    mapfile -t snapshots < <(
+      timeshift --list |
+        awk '$4 == "O" && $5 == "pre-system-update" { print $3 }' |
+        sort -r
+    )
+
+    if ((${#snapshots[@]} > 5)); then
+      for ((i = 5; i < ${#snapshots[@]}; i++)); do
+        echo "Removing old pre-update snapshot: ${snapshots[$i]}"
+        timeshift \
+          --delete \
+          --snapshot "${snapshots[$i]}" \
+          --yes
+      done
+    fi
+    ;;
+
+  timeshift-weekly)
     command -v timeshift >/dev/null 2>&1 || {
       echo "ERROR: timeshift is not installed" >&2
       exit 1
@@ -22,8 +50,7 @@ case "$action" in
 
     exec timeshift \
       --create \
-      --comments "pre-system-update" \
-      --tags D
+      --tags W
     ;;
 
   pacman)
