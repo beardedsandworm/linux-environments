@@ -162,7 +162,7 @@ Host bootstraps should prepare the machine and hand off to repo-owned installers
 
 ## 7. Monitoring baseline
 
-Host monitoring includes package export, system updates, repository checks, disk-space checks, heartbeat, and scheduled credential capture where the corresponding units exist.
+Host monitoring includes package export, system updates, repository checks, disk-space checks and scheduled credential capture where the corresponding units exist.
 
 The monitoring design rule remains:
 

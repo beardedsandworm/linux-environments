@@ -1,5 +1,4 @@
 android-sdk-cmdline-tools-latest
-bambu-studio
 betterdiscord-installer
 cursor-bin
 displaylink

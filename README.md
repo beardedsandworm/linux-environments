@@ -122,7 +122,6 @@ linux-environments/
 │   ├── repo-update-check.*
 │   ├── dotfiles-change-check.*
 │   ├── disk-space-check.*
-│   ├── heartbeat.*
 │   └── ...
 │
 └── wallpaper/
@@ -429,7 +428,6 @@ Typical automation includes:
 | `repo-update-check` | Detect remote repository changes |
 | `dotfiles-change-check` | Detect local configuration drift |
 | `disk-space-check` | Warn about storage pressure |
-| `heartbeat` | Confirm that the machine is alive |
 
 Machine-specific services may also be installed where required.
 

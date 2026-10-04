@@ -1,0 +1,2 @@
+com.bambulab.BambuStudio
+com.orcaslicer.OrcaSlicer

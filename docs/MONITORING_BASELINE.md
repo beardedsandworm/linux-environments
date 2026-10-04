@@ -46,7 +46,7 @@ generating notifications. Actionable events should notify immediately.
 -   Host monitoring is performed with scheduled scripts.
 -   Monitoring results are delivered to Discord.
 -   Hosts perform automatic package updates.
--   Basic checks exist for disk usage, heartbeat, and repository
+-   Basic checks exist for disk usage and repository
     monitoring.
 
 ### Current Limitations

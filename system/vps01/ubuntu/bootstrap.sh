@@ -776,7 +776,6 @@ setup_git_monitoring() {
 setup_shared_monitoring() {
   echo "⚙ Setting up shared monitoring services and timers..."
   setup_user_service_pair "disk-space-check"
-  setup_user_service_pair "heartbeat"
 }
 
 setup_credential_capture() {
@@ -887,7 +886,6 @@ show_summary() {
   echo "  - repo-update-check     → remote update awareness"
   echo "  - dotfiles-change-check → local dotfiles drift awareness"
   echo "  - disk-space-check      → local disk usage warning"
-  echo "  - heartbeat             → device online signal"
   if [[ "${CREDENTIAL_CAPTURE_CONFIGURED:-0}" -eq 1 ]]; then
     echo "  - credential-capture    → encrypted credential state capture"
   else

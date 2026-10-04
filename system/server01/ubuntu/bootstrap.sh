@@ -893,7 +893,6 @@ EOF
 # --------------------------------------------------
 # Install and enable shared monitoring services/timers
 # - disk-space-check
-#- heartbeat
 # --------------------------------------------------
 setup_shared_monitoring() {
   echo "⚙ Setting up shared monitoring services and timers..."
@@ -902,12 +901,9 @@ setup_shared_monitoring() {
 
   cp "$REPO_ROOT/systemd/disk-space-check.service" "$HOME/.config/systemd/user/"
   cp "$REPO_ROOT/systemd/disk-space-check.timer" "$HOME/.config/systemd/user/"
-  cp "$REPO_ROOT/systemd/heartbeat.service" "$HOME/.config/systemd/user/"
-  cp "$REPO_ROOT/systemd/heartbeat.timer" "$HOME/.config/systemd/user/"
 
   systemctl --user daemon-reload
   systemctl --user enable --now disk-space-check.timer
-  systemctl --user enable --now heartbeat.timer
 
   echo "✓ Shared monitoring timers enabled"
 }
@@ -1334,7 +1330,6 @@ main() {
   echo "   - repo-update-check     → remote update awareness (daily)"
   echo "   - dotfiles-change-check → local dotfiles drift awareness (daily)"
   echo "   - disk-space-check      → local disk usage warning (daily)"
-  echo "   - heartbeat             → device online signal (daily)"
   echo "   - remote-unlock         → SSH unlock via initramfs (port 2222)"
   echo
 

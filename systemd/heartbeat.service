@@ -1,7 +1,0 @@
-[Unit]
-Description=Send device heartbeat notification
-
-[Service]
-Type=oneshot
-WorkingDirectory=%h/dotfiles
-ExecStart=%h/dotfiles/scripts/heartbeat.sh

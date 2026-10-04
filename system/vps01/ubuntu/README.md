@@ -1,21 +1,23 @@
 # Heighliner bootstrap refactor
 
-This bundle is the revised `vps01` bootstrap/network proposal. It separates the
-machine bootstrap from Heighliner-specific networking and makes the existing
-WireGuard identities recoverable from the repository.
+This document describes the current `vps01` bootstrap and network-recovery model.
+
+The design separates machine bootstrap from Heighliner-specific networking while preserving Heighliner's existing WireGuard identities and complete interface configurations in encrypted recovery state.
 
 ## Intended ownership
 
 - `bootstrap.sh` — generic Ubuntu/VPS bootstrap flow.
-- `configure-system.sh` — vps01-only orchestrator. It contains no tunnel logic.
-- `wireguard/setup.sh` — original Wormlogic `wg0` tunnel and its forwarding
-  policy.
-- `pvp/setup.sh` — `wg-pvp`, `wg-proton`, PVP policy routing, NAT and kill
-  switch.
-- `scripts/capture-age-key.sh` / `restore-age-key.sh` — universal age identity
-  escrow/recovery using `~/.config/dotfiles/machine-id`.
-- `scripts/capture-vps01-wireguard-state.sh` — one-time/current-state capture of
-  all three Heighliner WireGuard identities plus safe wg-pvp peer state.
+- `configure-system.sh` — `vps01`-specific orchestrator. It contains no tunnel-specific implementation logic.
+- `wireguard/setup.sh` — Wormlogic `wg0` tunnel and its forwarding policy.
+- `pvp/setup.sh` — `wg-pvp`, `wg-proton`, PVP policy routing, NAT, and kill switch.
+- `scripts/capture-age-key.sh` / `restore-age-key.sh` — universal age identity escrow/recovery using `~/.config/dotfiles/machine-id`.
+- `scripts/capture-vps01-wireguard-state.sh` — capture/reconciliation of Heighliner's persistent WireGuard configuration for encrypted recovery.
+
+Host WireGuard recovery belongs to `linux-environments`.
+
+Application and service recovery on Heighliner belongs to `vps-services`.
+
+---
 
 ## Project tree
 
@@ -28,10 +30,11 @@ scripts/
 secrets/
 └── vps01/
     ├── README.md
-    ├── age-key.age              # created by capture-age-key.sh
-    ├── wg0.key.enc              # created by capture-vps01-wireguard-state.sh
-    ├── wg-pvp.key.enc           # created by capture-vps01-wireguard-state.sh
-    └── wg-proton.conf.enc       # created by capture-vps01-wireguard-state.sh
+    ├── age-key.age
+    └── wireguard/
+        ├── wg0.conf.enc
+        ├── wg-pvp.conf.enc
+        └── wg-proton.conf.enc
 
 system/vps01/ubuntu/
 ├── bootstrap.sh
@@ -41,51 +44,71 @@ system/vps01/ubuntu/
 │   ├── heighliner.pub
 │   ├── sysctl.conf
 │   ├── wormlogic.nft
-│   ├── wormlogic-wg.service
-│   └── peers/
-│       ├── 10-midway.conf
-│       ├── 20-arrakis.conf
-│       ├── 30-ix.conf
-│       ├── 40-laptop01.conf
-│       ├── 50-laptop02.conf
-│       └── 60-pixel8pro.conf
+│   └── wormlogic-wg.service
 └── pvp/
     ├── setup.sh
     ├── pvp-routing.sh
     ├── pvp.nft
-    ├── wormlogic-pvp.service
-    ├── heighliner.pub            # created by capture script
-    ├── proton-client.pub         # created by capture script
-    └── peers/
-        ├── README.md
-        └── current.conf          # created by capture script
+    └── wormlogic-pvp.service
 ```
 
-The bundle intentionally does **not** include or replace your existing
-`system/vps01/ubuntu/apt.txt`. Merge these files into the existing repository so
-your package list is retained. The list must provide at least the commands used
-here, notably `age`, WireGuard (`wg`/`wg-quick`), `nft`, `stow`, Git, curl and the
-normal server tools already used by the bootstrap.
+Additional public peer/reference files may exist under the component directories where required by the setup implementation, but they are **not the recovery authority for the WireGuard interfaces**.
+
+The authoritative recovery state is:
+
+```text
+secrets/vps01/wireguard/*.conf.enc
+```
+
+The repository's existing:
+
+```text
+system/vps01/ubuntu/apt.txt
+```
+
+remains authoritative for the package set and is not replaced by this network-recovery design.
+
+It must provide at least the commands used by the bootstrap, including:
+
+- `age`
+- SOPS
+- WireGuard (`wg` / `wg-quick`)
+- `nft`
+- `stow`
+- Git
+- curl
+- normal server/bootstrap utilities already used by the host
+
+---
 
 ## Refactored bootstrap flow
 
-The important ordering is now:
+The important ordering is:
 
 ```text
 verify machine-id
-  ↓
+        ↓
 packages / Docker
-  ↓
-restore existing age identity from secrets/<machine-id>/age-key.age
-  OR generate an identity only when no encrypted device secrets exist
-  ↓
+        ↓
+restore existing age identity
+from secrets/<machine-id>/age-key.age
+
+OR
+
+generate a new age identity only when
+no encrypted machine state exists
+        ↓
 ensure SOPS
-  ↓
+        ↓
 configure-system.sh
-  ├── wireguard/setup.sh   (wg0 first)
-  └── pvp/setup.sh         (depends on wg0)
-  ↓
-normal monitoring/stow/export work
+    ├── wireguard/setup.sh
+    │       └── restore/reconcile wg0
+    │
+    └── pvp/setup.sh
+            ├── restore/reconcile wg-pvp
+            └── restore/reconcile wg-proton
+        ↓
+normal monitoring / stow / export work
 ```
 
 The persistent machine ID remains:
@@ -94,37 +117,159 @@ The persistent machine ID remains:
 ~/.config/dotfiles/machine-id
 ```
 
-That file must identify a replacement Heighliner as `vps01` before running the
-bootstrap, just as the existing bootstrap already requires.
+A replacement Heighliner must identify itself as:
 
-## Wormlogic wg0 captured state
+```text
+vps01
+```
 
-The committed peer files reflect the live state supplied from Heighliner:
+before machine-specific recovery is attempted.
 
-- Heighliner: `10.8.0.1/24`, UDP 51820
-- Midway: `10.8.0.2/32` plus routed `10.42.0.0/16`, keepalive 25
-- Arrakis: `10.8.0.3/32`
-- IX: `10.8.0.4/32`
-- laptop01: `10.8.0.10/32`
-- laptop02: `10.8.0.11/32`
-- Pixel 8 Pro: `10.8.0.20/32`
+---
 
-Dynamic peer `Endpoint=` values from the old `/etc/wireguard/wg0.conf` are not
-reproduced. Heighliner is the listening hub and learns roaming peer endpoints at
-runtime.
+## Age identity recovery
 
-The known Heighliner wg0 public identity is committed as:
+Heighliner's age identity recovery artifact is:
+
+```text
+secrets/vps01/age-key.age
+```
+
+It is encrypted independently with:
+
+```text
+age --passphrase
+```
+
+rather than SOPS.
+
+This is intentional.
+
+The machine age identity is required before SOPS can decrypt:
+
+```text
+secrets/vps01/wireguard/*.conf.enc
+```
+
+and other machine-specific encrypted recovery state.
+
+The passphrase for `age-key.age` must remain outside Git.
+
+The live restored identity belongs at:
+
+```text
+~/.config/sops/age/keys.txt
+```
+
+---
+
+## WireGuard recovery authority
+
+Heighliner has three persistent WireGuard interfaces:
+
+```text
+wg0
+wg-pvp
+wg-proton
+```
+
+Their encrypted recovery artifacts are:
+
+```text
+secrets/vps01/wireguard/wg0.conf.enc
+secrets/vps01/wireguard/wg-pvp.conf.enc
+secrets/vps01/wireguard/wg-proton.conf.enc
+```
+
+Each artifact contains the **complete persistent configuration** for its corresponding interface.
+
+The model is:
+
+```text
+/etc/wireguard/wg0.conf
+        ↓ capture
+secrets/vps01/wireguard/wg0.conf.enc
+
+/etc/wireguard/wg-pvp.conf
+        ↓ capture
+secrets/vps01/wireguard/wg-pvp.conf.enc
+
+/etc/wireguard/wg-proton.conf
+        ↓ capture
+secrets/vps01/wireguard/wg-proton.conf.enc
+```
+
+and during recovery:
+
+```text
+secrets/vps01/wireguard/*.conf.enc
+        ↓ SOPS decrypt
+/etc/wireguard/*.conf
+        ↓
+wg-quick / systemd reconciliation
+```
+
+This replaces the previous split-key model.
+
+The following artifacts are obsolete and are **not** recovery inputs:
+
+```text
+secrets/vps01/wg0.key.enc
+secrets/vps01/wg-pvp.key.enc
+secrets/vps01/wg-proton.conf.enc
+```
+
+The current Proton artifact is instead:
+
+```text
+secrets/vps01/wireguard/wg-proton.conf.enc
+```
+
+Do not create separate recovery copies of individual WireGuard private keys.
+
+---
+
+## Wormlogic `wg0`
+
+The current Wormlogic topology is:
+
+```text
+Heighliner   10.8.0.1/24   UDP 51820
+Midway       10.8.0.2/32
+Arrakis      10.8.0.3/32
+IX           10.8.0.4/32
+laptop01     10.8.0.10/32
+laptop02     10.8.0.11/32
+Pixel 8 Pro  10.8.0.20/32
+```
+
+Midway additionally carries the appropriate routed Wormlogic/home-network prefixes and uses persistent keepalive where required.
+
+Heighliner is the listening WireGuard hub.
+
+Roaming client endpoint information learned dynamically by the running WireGuard interface is runtime state and is not the recovery authority.
+
+The capture process reads the persistent configuration under:
+
+```text
+/etc/wireguard/
+```
+
+rather than attempting to reconstruct recovery configuration from runtime `wg` output.
+
+The known Heighliner `wg0` public identity is:
 
 ```text
 O8SmQdIDV3+SJMldSQoYWV6neF39SPQSz7iMnQGnWz4=
 ```
 
-`wireguard/setup.sh` refuses to install a recovered private key if it does not
-derive to that public key.
+Recovery should refuse to install a `wg0` configuration whose private key derives to a different public identity.
+
+---
 
 ## Routing/sysctl baseline
 
-The live known-good state is preserved:
+The known-good host routing baseline is:
 
 ```text
 net.ipv4.ip_forward = 1
@@ -132,152 +277,330 @@ net.ipv4.conf.all.rp_filter = 2
 net.ipv4.conf.default.rp_filter = 2
 ```
 
-The previous proposal's `rp_filter=0` behavior has been removed. PVP explicitly
-keeps existing network interfaces in loose mode (`2`).
+PVP uses loose reverse-path filtering rather than disabling it globally.
 
-The old duplicated iptables wg0 forwarding rules are **not** part of the
-recovery definition. The new design owns one small nftables table that permits
-`wg0 -> wg0` forwarding without modifying Docker's iptables-nft tables.
+The obsolete duplicated iptables forwarding rules are not part of the recovery definition.
+
+The current design owns an explicit nftables policy for Wormlogic/PVP forwarding without treating Docker's generated iptables-nft state as configuration authority.
+
+---
 
 ## Capture the current Heighliner
 
-After merging/pushing this bundle and pulling it onto the current Heighliner:
-
 ### 1. Escrow the machine age identity
+
+Run:
 
 ```bash
 ./scripts/capture-age-key.sh
 ```
 
-This creates:
+This creates or refreshes:
 
 ```text
 secrets/vps01/age-key.age
 ```
 
-It is encrypted with an independent passphrase, not with SOPS. Store that
-passphrase outside Git. The script verifies the recovery blob before installing
-it.
+The artifact is encrypted with an independent passphrase.
 
-### 2. Capture all three WireGuard identities
+Store that passphrase outside Git.
+
+The recovery blob should be verified by the capture process before it is considered valid.
+
+---
+
+### 2. Capture WireGuard recovery state
+
+Run:
 
 ```bash
 ./scripts/capture-vps01-wireguard-state.sh
 ```
 
-This captures, without printing private keys:
+The capture process records the complete persistent configurations:
 
 ```text
 /etc/wireguard/wg0.conf
-    private key -> secrets/vps01/wg0.key.enc
+    ↓
+secrets/vps01/wireguard/wg0.conf.enc
 
 /etc/wireguard/wg-pvp.conf
-    private key -> secrets/vps01/wg-pvp.key.enc
-    public peer sections -> pvp/peers/current.conf
+    ↓
+secrets/vps01/wireguard/wg-pvp.conf.enc
 
 /etc/wireguard/wg-proton.conf
-    complete provider profile -> secrets/vps01/wg-proton.conf.enc
+    ↓
+secrets/vps01/wireguard/wg-proton.conf.enc
 ```
 
-It also records the wg-pvp and Proton client public identities. Before writing
-recovery state it verifies that the private keys in all three persistent config
-files derive to the public keys of the corresponding *running* interfaces. That
-prevents persistent/runtime drift from being silently committed.
+The files are encrypted with SOPS using Heighliner's restored/current age identity.
 
-`wg-pvp` dynamic `Endpoint=` lines are omitted. If `wg-pvp.conf` contains a
-`PresharedKey=`, the capture aborts rather than place that secret in Git-managed
-peer configuration.
+Private keys, provider credentials, preshared keys, and other secret WireGuard configuration remain inside the encrypted artifacts.
+
+They must not be copied into public peer files merely to support recovery.
+
+Before replacing existing recovery state, the capture process should validate that the persistent configuration corresponds to the intended running interface identities.
 
 Use `--force` only when intentionally refreshing existing captured state.
 
-### 3. Review and commit
+---
+
+### 3. Verify the captured identities
+
+Encrypted configuration can be checked without printing a private key.
+
+For example, the recovered `wg0` identity can be derived with:
+
+```bash
+sops --decrypt \
+  --input-type json \
+  --output-type binary \
+  secrets/vps01/wireguard/wg0.conf.enc \
+  | awk -F ' = ' '/^PrivateKey = / { print $2; exit }' \
+  | wg pubkey
+```
+
+The resulting public key should be:
+
+```text
+O8SmQdIDV3+SJMldSQoYWV6neF39SPQSz7iMnQGnWz4=
+```
+
+Equivalent identity checks can be performed for `wg-pvp` and `wg-proton` without exposing their private keys.
+
+---
+
+### 4. Review and commit
+
+Review the repository normally:
 
 ```bash
 git status
 git diff -- system/vps01/ubuntu
+git status --short secrets/vps01/
 ```
 
-SOPS ciphertext can be sanity-checked without printing a private key, for
-example:
+The encrypted WireGuard artifacts are intentionally committed.
 
-```bash
-sops --decrypt --input-type json --output-type binary \
-  secrets/vps01/wg0.key.enc | wg pubkey
-```
+Plaintext copies under `/etc/wireguard/` remain local host state.
 
-It should output the committed Heighliner wg0 public key.
+Once reviewed, commit and push the updated encrypted recovery state and any corresponding non-secret configuration changes.
 
-Once reviewed, commit/push the encrypted secrets and captured public state.
+---
 
-## Applying the refactor to the current Heighliner
+## Applying network reconciliation to the current Heighliner
 
-After the capture files exist, you do not need to rerun the entire bootstrap to
-adopt the network refactor. Run:
+A full host bootstrap is not required merely to reconcile Heighliner's networking.
+
+Run:
 
 ```bash
 ./system/vps01/ubuntu/configure-system.sh
 ```
 
-It applies components in this order:
+The component order remains:
 
 ```text
 Wormlogic wg0
-  ↓
+        ↓
 PVP gateway
 ```
 
-If a WireGuard interface is already active, the setup uses `wg syncconf` rather
-than deliberately tearing it down. On a replacement machine, the corresponding
-`wg-quick@...` service is started normally from the rebuilt configuration.
+The setup logic should reconcile an already-running interface without deliberately tearing down working connectivity where `wg syncconf` or an equivalent safe reconciliation path is appropriate.
+
+On a replacement host, the restored configurations are installed under:
+
+```text
+/etc/wireguard/
+```
+
+and the corresponding systemd/`wg-quick` services bring the interfaces online normally.
+
+---
 
 ## Disaster recovery path
 
 On a replacement VPS:
 
-1. Establish the normal user and set its persistent machine ID to `vps01` using
-   your existing provisioning process.
-2. Clone/pull the repository.
-3. Ensure the provider firewall permits UDP 51820 and 51821.
-4. Run the normal vps01 bootstrap.
-5. Bootstrap sees `secrets/vps01/age-key.age` and invokes
-   `scripts/restore-age-key.sh` before attempting to decrypt host secrets.
-6. Enter the independent age-recovery passphrase.
-7. `wireguard/setup.sh` restores the same wg0 identity and peer set.
-8. `pvp/setup.sh` restores the same wg-pvp identity and complete Proton profile,
-   then installs the fail-closed routing/firewall layer.
-9. Point the public DNS name used by Wormlogic clients at the replacement VPS if
-   its public IP changed.
+1. Establish the normal administrative user.
+2. Set:
 
-Existing WireGuard clients therefore retain their peer identity/configuration;
-the replacement server presents the same public keys.
+   ```text
+   ~/.config/dotfiles/machine-id
+   ```
+
+   to:
+
+   ```text
+   vps01
+   ```
+
+3. Clone `linux-environments`.
+4. Ensure the provider firewall permits:
+   - UDP 51820 for Wormlogic `wg0`
+   - UDP 51821 for PVP `wg-pvp`
+5. Run the normal `vps01` bootstrap.
+6. Bootstrap detects:
+
+   ```text
+   secrets/vps01/age-key.age
+   ```
+
+   and restores the existing age identity before attempting SOPS recovery.
+7. Enter the independently stored age-recovery passphrase.
+8. SOPS decrypts:
+
+   ```text
+   secrets/vps01/wireguard/wg0.conf.enc
+   secrets/vps01/wireguard/wg-pvp.conf.enc
+   secrets/vps01/wireguard/wg-proton.conf.enc
+   ```
+
+9. The recovered configurations are installed under:
+
+   ```text
+   /etc/wireguard/
+   ```
+
+10. `wireguard/setup.sh` restores/reconciles Wormlogic `wg0`.
+11. `pvp/setup.sh` restores/reconciles `wg-pvp` and `wg-proton`, then applies PVP routing and firewall policy.
+12. Complete normal host recovery.
+13. Hand application/service recovery to `vps-services`.
+14. If the VPS public IP changed, update the public DNS record used by Wormlogic peers.
+
+Existing WireGuard clients retain their configured peer identities because the replacement Heighliner restores the same WireGuard private identities.
+
+---
 
 ## PVP design retained
 
-- PVP subnet: `10.9.0.0/24`
-- Heighliner: `10.9.0.1/24`, UDP 51821
-- table 200 (`pvp`) routes PVP Internet to `wg-proton`
-- an unreachable fallback remains in table 200
-- firewall permits `wg-pvp -> wg-proton`, approved private traffic via `wg0`,
-  and Pi-hole through deterministic Docker bridge `br-pihole`
-- `wg-pvp -> eth0` is dropped
-- NAT applies only to `10.9.0.0/24 -> wg-proton`
-- PVP-to-home/private traffic is not NATed
-
-The PVP policy assumes the `vps-services` Pi-hole network remains deterministic:
+Current PVP architecture:
 
 ```text
-bridge:  br-pihole
-subnet:  172.21.0.0/24
-Pi-hole: 172.21.0.2
+PVP subnet:   10.9.0.0/24
+Heighliner:   10.9.0.1/24
+Listener:     UDP 51821
+Routing table: 200 (pvp)
+Provider VPN: wg-proton
 ```
 
-That Docker service/network remains the responsibility of the `vps-services`
-repository, not this OS bootstrap.
+Traffic policy remains:
+
+```text
+PVP client
+    ↓
+wg-pvp
+    ↓
+table 200
+    ↓
+wg-proton
+    ↓
+Internet
+```
+
+An unreachable fallback remains in table 200 so loss of the provider tunnel does not silently fall back to the VPS's ordinary Internet interface.
+
+Firewall policy permits:
+
+- `wg-pvp → wg-proton`
+- approved PVP → private/Wormlogic traffic through `wg0`
+- required DNS access to the Heighliner Pi-hole path
+
+Firewall policy blocks:
+
+```text
+wg-pvp → ordinary VPS Internet interface
+```
+
+NAT applies only to:
+
+```text
+10.9.0.0/24 → wg-proton
+```
+
+PVP-to-home/private traffic is not NATed.
+
+---
+
+## PVP DNS dependency
+
+The PVP policy depends on the deterministic Pi-hole Docker network owned by `vps-services`:
+
+```text
+bridge:        br-pihole
+subnet:        172.21.0.0/24
+host address:  172.21.0.1
+Pi-hole:       172.21.0.2
+```
+
+The Docker bridge and Pi-hole container are **not** owned by `linux-environments`.
+
+They remain the responsibility of:
+
+```text
+vps-services
+```
+
+This creates an intentional dependency boundary:
+
+```text
+linux-environments
+    ↓
+host WireGuard + PVP routing/firewall
+
+vps-services
+    ↓
+Docker bridge + Pi-hole + application DNS
+```
+
+The host bootstrap should not duplicate `vps-services` logic in order to satisfy this dependency.
+
+---
 
 ## Still external / not encoded here
 
-- Provider firewall UDP 51820 (Wormlogic) and UDP 51821 (PVP).
-- Public DNS failover to a replacement VPS.
-- Midway's eventual return route/AllowedIPs for `10.9.0.0/24` if preserving
-  source addresses for PVP -> home traffic. This was not yet implemented/tested
-  and is intentionally not invented here.
+The following remain outside `linux-environments` recovery:
+
+- provider firewall rules for UDP 51820 and UDP 51821;
+- public DNS failover if the replacement VPS receives a different public IP;
+- application/service recovery owned by `vps-services`;
+- external provider state associated with the Proton WireGuard profile;
+- Midway policy changes that may be required if the PVP routing design changes.
+
+Do not invent or duplicate those authorities inside the host bootstrap.
+
+---
+
+## Obsolete recovery model
+
+The previous split-key recovery model is retired.
+
+Do not use:
+
+```text
+secrets/vps01/wg0.key.enc
+secrets/vps01/wg-pvp.key.enc
+secrets/vps01/wg-proton.conf.enc
+```
+
+Do not document recovery as:
+
+```text
+private key
+    +
+tracked public peer configuration
+    ↓
+reconstruct interface
+```
+
+The current model is:
+
+```text
+complete persistent interface configuration
+        ↓
+SOPS-encrypted recovery artifact
+        ↓
+restore complete interface configuration
+```
+
+Once no current script or documentation references the obsolete split-key artifacts, they can be removed from the repository.
