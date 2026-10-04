@@ -5,3 +5,5 @@ Description=System package updater
 Type=oneshot
 WorkingDirectory=%h/dotfiles
 ExecStart=%h/dotfiles/scripts/system-update.sh
+StandardInput=null
+TimeoutStartSec=6h

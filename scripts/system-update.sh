@@ -1,33 +1,56 @@
 #!/usr/bin/env bash
-
 set -euo pipefail
 
 LOG_PREFIX="[system-update]"
+ROOT_HELPER="/usr/local/libexec/wormlogic/system-update-root"
+AUR_SUDO="/usr/local/bin/wormlogic-update-sudo"
 
 echo "$LOG_PREFIX Starting system update..."
+
+die() {
+  echo "$LOG_PREFIX ERROR: $*" >&2
+  exit 1
+}
+
+run_root() {
+  sudo -n "$ROOT_HELPER" "$@"
+}
 
 detect_distro() {
   if command -v pacman >/dev/null 2>&1; then
     echo "arch"
-  elif command -v apt >/dev/null 2>&1; then
+  elif command -v apt-get >/dev/null 2>&1; then
     echo "ubuntu"
   else
     echo "unsupported"
   fi
 }
 
-DISTRO="$(detect_distro)"
+[[ -x "$ROOT_HELPER" ]] ||
+  die "Missing privileged update helper: $ROOT_HELPER"
 
-if [[ "$DISTRO" == "unsupported" ]]; then
-  echo "$LOG_PREFIX Unsupported system"
-  exit 1
-fi
+DISTRO="$(detect_distro)"
 
 echo "$LOG_PREFIX Distro: $DISTRO"
 
 update_arch() {
-  echo "$LOG_PREFIX Updating pacman packages..."
-  sudo pacman -Syu --noconfirm
+  command -v yay >/dev/null 2>&1 ||
+    die "yay is required for scheduled Arch updates"
+
+  [[ -x "$AUR_SUDO" ]] ||
+    die "Missing AUR privilege helper: $AUR_SUDO"
+
+  echo "$LOG_PREFIX Creating pre-update Timeshift snapshot..."
+  run_root timeshift
+
+  echo "$LOG_PREFIX Updating Arch repository and AUR packages..."
+  yay -Syu \
+    --noconfirm \
+    --answerclean None \
+    --answerdiff None \
+    --answeredit None \
+    --answerupgrade None \
+    --sudo "$AUR_SUDO"
 
   if command -v flatpak >/dev/null 2>&1; then
     echo "$LOG_PREFIX Updating Flatpak packages..."
@@ -39,12 +62,11 @@ update_arch() {
 
 update_ubuntu() {
   echo "$LOG_PREFIX Updating apt packages..."
-  sudo apt update
-  sudo apt upgrade -y
+  run_root apt-get
 
   if command -v snap >/dev/null 2>&1; then
     echo "$LOG_PREFIX Refreshing snap packages..."
-    sudo snap refresh
+    run_root snap
   else
     echo "$LOG_PREFIX snap not present, skipping"
   fi
@@ -66,16 +88,15 @@ update_ubuntu() {
 }
 
 case "$DISTRO" in
-arch)
-  update_arch
-  ;;
-ubuntu)
-  update_ubuntu
-  ;;
-*)
-  echo "$LOG_PREFIX Unsupported distro"
-  exit 1
-  ;;
+  arch)
+    update_arch
+    ;;
+  ubuntu)
+    update_ubuntu
+    ;;
+  *)
+    die "Unsupported system"
+    ;;
 esac
 
 echo "$LOG_PREFIX System update complete"
