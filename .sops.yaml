@@ -1,0 +1,8 @@
+creation_rules:
+  - path_regex: ^secrets/shared/.*\.enc$
+    age: >-
+      age1hrygq636myt2tyw2lpte8fzvjdwx044w7duv5hu4ygw70gr3kcjqf9tte9,
+      age1rsdqqt7sk6a6cftyfsh844xzn8a74daf85kc69ff36dh8f69rpeqmn45lk,
+      age1gea8ggnte2na8m03cj3pk7280q3ecvxhqvqqqwl6pnnfr2j8hu6s4gv6h6,
+      age18rckctrg0shvfgmxvg3lqrtdu4qgmdwjp3sahv5vynzcsp5qhp5snux7sk,
+      age1dzky77txyrdnxr6tpu9mntar5xk6cl4rlr6lp5ywfwnhpkhmndksup8f8c
