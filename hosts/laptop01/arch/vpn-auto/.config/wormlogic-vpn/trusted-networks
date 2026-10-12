@@ -1,3 +1,4 @@
 # Stable network fingerprints trusted for direct Internet use.
 # Managed with network-trust / network-revoke.
 wifi:63424df7a774da9356d8663caabf47fdbb1d1a72450d4f79488255b2bfc92b64
+wifi:74cc21ad1901a74c84747fd381df2b20f19f050d40a7ba0833d61fdea4728f04
