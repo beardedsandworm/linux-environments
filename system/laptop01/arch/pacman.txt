@@ -133,6 +133,7 @@ power-profiles-daemon
 python-lz4
 python-pypng
 python-virtualenv
+rpi-imager
 rygel
 sane-airscan
 showtime
@@ -177,6 +178,7 @@ xdg-desktop-portal-gnome
 xdg-user-dirs-gtk
 xdg-utils
 xorg-server
+xorg-xhost
 xorg-xinit
 yelp
 zip
