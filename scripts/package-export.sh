@@ -3,6 +3,7 @@
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+NOTIFY_SCRIPT="${NOTIFY_SCRIPT:-$REPO_ROOT/scripts/notify.sh}"
 MACHINE_ID_FILE="${XDG_CONFIG_HOME:-$HOME/.config}/dotfiles/machine-id"
 LOG_PREFIX="[package-export]"
 
@@ -56,6 +57,7 @@ write_if_changed() {
   fi
 
   mv "$tmpfile" "$outfile"
+  changed_files+=("${outfile#"$REPO_ROOT"/}")
   echo "$LOG_PREFIX Updated: $(basename "$outfile")"
   return 0
 }
@@ -65,6 +67,7 @@ remove_if_exists() {
 
   if [[ -f "$outfile" ]]; then
     rm -f "$outfile"
+    changed_files+=("${outfile#"$REPO_ROOT"/}")
     echo "$LOG_PREFIX Removed stale file: $(basename "$outfile")"
     return 0
   fi
@@ -112,6 +115,7 @@ export_brew() {
 }
 
 changed=0
+changed_files=()
 
 if [[ "$DISTRO" == "arch" ]]; then
   tmp_pacman="$(mktemp)"
@@ -196,9 +200,19 @@ if [[ "$DISTRO" == "ubuntu" ]]; then
 fi
 
 if [[ "$changed" -eq 1 ]]; then
-  "$REPO_ROOT/scripts/notify.sh" \
-    "Package List Updated" \
-    "Package state changed for $MACHINE_ID on $(hostname). Review and commit the updated files in $TARGET_DIR."
+  details_json="$(printf '%s\n' "${changed_files[@]}" | python3 -c 'import json,sys; print(json.dumps({"changed_files": [line.rstrip("\n") for line in sys.stdin if line.rstrip("\n")]}))')"
+  changed_summary="$(IFS=', '; printf '%s' "${changed_files[*]}")"
+  "$NOTIFY_SCRIPT" \
+    --producer "linux-environments.package-export" \
+    --kind observation \
+    --domain packages \
+    --event-type package_inventory.changed \
+    --severity info \
+    --state observed \
+    --dedupe-key "package-inventory:${MACHINE_ID}" \
+    --title "Package Inventory Changed" \
+    --summary "Package inventory changed for $MACHINE_ID: $changed_summary" \
+    --details-json "$details_json"
 fi
 
 echo "$LOG_PREFIX Package export complete"

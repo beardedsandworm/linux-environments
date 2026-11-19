@@ -818,12 +818,6 @@ setup_system_update() {
   setup_user_service_pair "system-update"
 }
 
-setup_git_monitoring() {
-  echo "⚙ Setting up git monitoring services and timers..."
-  setup_user_service_pair "repo-update-check"
-  setup_user_service_pair "dotfiles-change-check"
-}
-
 setup_shared_monitoring() {
   echo "⚙ Setting up shared monitoring services and timers..."
   setup_user_service_pair "disk-space-check"
@@ -945,8 +939,6 @@ show_summary() {
   echo "Services configured:"
   echo "  - package-export        → state tracking"
   echo "  - system-update         → scheduled system maintenance"
-  echo "  - repo-update-check     → remote update awareness"
-  echo "  - dotfiles-change-check → local dotfiles drift awareness"
   echo "  - disk-space-check      → local disk usage warning"
   echo "  - credential-capture    → encrypted credential recovery capture"
   echo
@@ -1036,7 +1028,6 @@ main() {
 
   setup_package_export
   setup_system_update
-  setup_git_monitoring
   setup_shared_monitoring
   setup_credential_capture
   prepare_shell_dotfiles

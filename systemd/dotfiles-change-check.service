@@ -1,7 +1,0 @@
-[Unit]
-Description=Check dotfiles repo for local changes
-
-[Service]
-Type=oneshot
-WorkingDirectory=%h/dotfiles
-ExecStart=%h/dotfiles/scripts/dotfiles-change-check.sh

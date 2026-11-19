@@ -7,7 +7,6 @@ set -euo pipefail
 # --------------------------------------------------
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 MACHINE_ID_FILE="${XDG_CONFIG_HOME:-$HOME/.config}/dotfiles/machine-id"
-WEBHOOK_FILE="${XDG_CONFIG_HOME:-$HOME/.config}/dotfiles/discord-webhook"
 N8N_WEBHOOK_FILE="${XDG_CONFIG_HOME:-$HOME/.config}/dotfiles/n8n-webhook"
 
 # --------------------------------------------------
@@ -129,39 +128,6 @@ prompt_git_config() {
   if [[ -n "$git_email" ]]; then
     git config --global user.email "$git_email"
     echo "✓ Set git user.email to '$git_email'"
-  fi
-}
-
-# --------------------------------------------------
-# Prompt for Discord webhook
-# - blank input keeps existing value or skips setup
-# --------------------------------------------------
-prompt_discord_webhook() {
-  local current_webhook new_webhook
-
-  mkdir -p "$(dirname "$WEBHOOK_FILE")"
-
-  if [[ -f "$WEBHOOK_FILE" ]]; then
-    current_webhook="$(<"$WEBHOOK_FILE")"
-  else
-    current_webhook=""
-  fi
-
-  echo
-  echo "📣 Discord webhook configuration"
-  echo "   Example:"
-  echo "   https://discord.com/api/webhooks/123456789012345678/abcdefghijklmnopqrstuvwxyz"
-  echo "   Leave blank to keep current value or skip."
-  read -r -p "Discord webhook [${current_webhook:-unset}]: " new_webhook
-
-  if [[ -n "$new_webhook" ]]; then
-    printf "%s\n" "$new_webhook" >"$WEBHOOK_FILE"
-    chmod 600 "$WEBHOOK_FILE"
-    echo "✓ Discord webhook saved to $WEBHOOK_FILE"
-  elif [[ -n "$current_webhook" ]]; then
-    echo "✓ Keeping existing Discord webhook"
-  else
-    echo "• No Discord webhook configured"
   fi
 }
 
@@ -307,7 +273,6 @@ main() {
   fi
 
   prompt_git_config
-  prompt_discord_webhook
   prompt_n8n_webhook
   confirm_execution
 

@@ -887,25 +887,6 @@ setup_system_update() {
 }
 
 # --------------------------------------------------
-# Install and enable git monitoring services/timers
-# --------------------------------------------------
-setup_git_monitoring() {
-  echo "⚙ Setting up git monitoring services and timers..."
-
-  mkdir -p "$HOME/.config/systemd/user"
-  cp "$REPO_ROOT/systemd/repo-update-check.service" "$HOME/.config/systemd/user/"
-  cp "$REPO_ROOT/systemd/repo-update-check.timer" "$HOME/.config/systemd/user/"
-  cp "$REPO_ROOT/systemd/dotfiles-change-check.service" "$HOME/.config/systemd/user/"
-  cp "$REPO_ROOT/systemd/dotfiles-change-check.timer" "$HOME/.config/systemd/user/"
-
-  systemctl --user daemon-reload
-  systemctl --user enable --now repo-update-check.timer
-  systemctl --user enable --now dotfiles-change-check.timer
-
-  echo "✓ Git monitoring timers enabled"
-}
-
-# --------------------------------------------------
 # Setup remote unlock via SSH (Dropbear in initramfs)
 # - allows remote LUKS unlock over SSH during boot
 # - uses separate Stow-managed preboot authorized keys
@@ -1375,7 +1356,6 @@ main() {
   setup_package_export
   setup_credential_capture
   setup_system_update
-  setup_git_monitoring
   setup_shared_monitoring
   prepare_shell_dotfiles
   apply_host_environment
@@ -1388,8 +1368,6 @@ main() {
   echo "   - package-export        → state tracking (runs now + daily)"
   echo "   - credential-capture    → encrypted credential recovery capture"
   echo "   - system-update         → system maintenance (scheduled)"
-  echo "   - repo-update-check     → remote update awareness (daily)"
-  echo "   - dotfiles-change-check → local dotfiles drift awareness (daily)"
   echo "   - disk-space-check      → local disk usage warning (daily)"
   echo "   - remote-unlock         → SSH unlock via initramfs (port 2222)"
   echo

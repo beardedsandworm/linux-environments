@@ -119,8 +119,6 @@ linux-environments/
 │   ├── credential-capture.*
 │   ├── package-export.*
 │   ├── system-update.*
-│   ├── repo-update-check.*
-│   ├── dotfiles-change-check.*
 │   ├── disk-space-check.*
 │   └── ...
 │
@@ -425,8 +423,6 @@ Typical automation includes:
 | `credential-capture` | Capture encrypted credential recovery state |
 | `package-export` | Record installed package state |
 | `system-update` | Scheduled host maintenance |
-| `repo-update-check` | Detect remote repository changes |
-| `dotfiles-change-check` | Detect local configuration drift |
 | `disk-space-check` | Warn about storage pressure |
 
 Machine-specific services may also be installed where required.
@@ -440,15 +436,30 @@ The machines are expected to report their own state instead of requiring constan
 Monitoring covers areas such as:
 
 * package state
-* repository drift
-* dotfile drift
 * disk usage
 * system updates
 * credential capture
 * host availability
 * service-specific health where appropriate
 
-Notifications can be delivered through the Wormlogic Discord/n8n monitoring path.
+Host events are sent to n8n, which owns persistence, classification and downstream notification routing.
+
+The common host reporters deliberately have different signal policies:
+
+* `system-update` emits one structured result after every scheduled run, including updates applied, updates remaining and reboot state.
+* `package-export` emits only when a tracked package inventory changes.
+* `disk-space-check` emits only when the configured capacity threshold is reached.
+
+All three use `scripts/notify.sh`. The transport accepts explicit producer, event type, severity, lifecycle and deduplication fields, queues failed deliveries locally, and has no direct Discord authority. A temporary top-level compatibility adapter remains in its payload until the replacement internal n8n workflows are deployed.
+
+During this reporting migration, already-provisioned clients must reconcile their installed user units after pulling the verified commit:
+
+```bash
+git pull --ff-only
+./scripts/update-reporting-services.sh
+```
+
+The temporary updater removes retired units, installs the three current unit pairs, reloads the user manager and verifies timer state without manually running any scheduled job. Remove the script and this migration note after every provisioned client has converged.
 
 The objective is not merely:
 

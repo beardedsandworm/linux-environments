@@ -1,7 +1,0 @@
-[Unit]
-Description=Check local git repos for remote updates
-
-[Service]
-Type=oneshot
-WorkingDirectory=%h
-ExecStart=%h/dotfiles/scripts/repo-update-check.sh

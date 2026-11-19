@@ -6,4 +6,7 @@ secrets/*
 !secrets/**/*.enc
 !secrets/**/*.age
 
+# Local test/runtime artifacts
+__pycache__/
+*.py[cod]
 
