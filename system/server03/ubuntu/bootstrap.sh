@@ -9,7 +9,7 @@ REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
 MACHINE_ID_FILE="${XDG_CONFIG_HOME:-$HOME/.config}/dotfiles/machine-id"
 EXPECTED_MACHINE="${1:-server03}"
 EXPECTED_OS="ubuntu"
-MACHINE_LABEL="Terramaster"
+MACHINE_LABEL="Caladan"
 
 # --------------------------------------------------
 # Verify machine identity
@@ -49,7 +49,6 @@ verify_os() {
 # Prepare Ubuntu repositories and architecture
 # - universe
 # - multiverse
-# - i386 support
 # - package upgrade is performed once later via nala
 # --------------------------------------------------
 prepare_ubuntu_repos() {
@@ -60,8 +59,7 @@ prepare_ubuntu_repos() {
 
   sudo add-apt-repository -y universe
   sudo add-apt-repository -y multiverse
-  sudo dpkg --add-architecture i386 || true
-
+ 
   echo "✓ Ubuntu repository preparation complete"
 }
 
