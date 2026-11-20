@@ -1238,6 +1238,20 @@ reconcile_wireguard_credentials() {
   echo "✓ WireGuard recovery state ready"
 }
 
+write_heighliner_peer_fragment() {
+  local writer="$REPO_ROOT/scripts/write-heighliner-peer-fragment.sh"
+
+  [[ -x "$writer" ]] || {
+    echo "✗ Missing or non-executable Heighliner peer writer: $writer"
+    exit 1
+  }
+
+  "$writer" \
+    "${WORMLOGIC_VPN_MACHINE_ID:?Wormlogic machine ID unavailable}" \
+    "${WORMLOGIC_VPN_PUBLIC_KEY:?Wormlogic public key unavailable}" \
+    "${WORMLOGIC_VPN_IP:?Wormlogic VPN IP unavailable}"
+}
+
 setup_wormlogic_vpn() {
   local vpn_name="wormlogic"
   local vps_host="vpn.wormlogic.com"
@@ -1491,19 +1505,9 @@ show_summary() {
   echo
   echo "WireGuard (Wormlogic VPN):"
   if [[ -n "${WORMLOGIC_VPN_PUBLIC_KEY:-}" ]]; then
-    echo " Interface: wormlogic"
-    echo " VPN IP: ${WORMLOGIC_VPN_IP:-unknown}"
-    echo
-    echo "⚠ Action required on Heighliner:"
-    echo
-    echo "Add this peer under system/vps01/ubuntu/wireguard/peers/:"
-    echo
-    echo " # ${WORMLOGIC_VPN_MACHINE_ID:-unknown}"
-    echo " [Peer]"
-    echo " PublicKey = $WORMLOGIC_VPN_PUBLIC_KEY"
-    echo " AllowedIPs = ${WORMLOGIC_VPN_IP:-REPLACE_WITH_CLIENT_IP}"
-    echo
-    echo "Then rerun Heighliner's WireGuard setup/configure-system reconciliation."
+    echo "  Interface: wormlogic"
+    echo "  VPN IP:    ${WORMLOGIC_VPN_IP:-unknown}"
+    echo "  Public key: $WORMLOGIC_VPN_PUBLIC_KEY"
   fi
   echo
 }
@@ -1554,6 +1558,7 @@ main() {
   setup_shared_monitoring
   reconcile_wireguard_credentials
   setup_wormlogic_vpn
+  write_heighliner_peer_fragment
   prepare_shell_dotfiles
   apply_general_dotfiles
   apply_host_environment

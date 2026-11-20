@@ -606,6 +606,20 @@ reconcile_wireguard_credentials() {
 # Preserve Farcaster's existing wg0 key from the previous bootstrap.
 # The completed config is then captured using the shared recovery helpers.
 # --------------------------------------------------
+write_heighliner_peer_fragment() {
+  local writer="$REPO_ROOT/scripts/write-heighliner-peer-fragment.sh"
+
+  [[ -x "$writer" ]] || {
+    echo "✗ Missing or non-executable Heighliner peer writer: $writer"
+    exit 1
+  }
+
+  "$writer" \
+    "${WORMLOGIC_VPN_MACHINE_ID:?Wormlogic machine ID unavailable}" \
+    "${WORMLOGIC_VPN_PUBLIC_KEY:?Wormlogic public key unavailable}" \
+    "${WORMLOGIC_VPN_IP:?Wormlogic VPN IP unavailable}"
+}
+
 setup_wormlogic_vpn() {
   local vpn_name="wormlogic"
   local vps_host="vpn.wormlogic.com"
@@ -1075,19 +1089,9 @@ show_summary() {
   if [[ -n "${WORMLOGIC_VPN_PUBLIC_KEY:-}" ]]; then
     echo "  Interface: wormlogic"
     echo "  VPN IP:    ${WORMLOGIC_VPN_IP:-unknown}"
+    echo "  Public key: $WORMLOGIC_VPN_PUBLIC_KEY"
     echo "  State:     $(systemctl is-active wg-quick@wormlogic.service 2>/dev/null || true)"
     echo "  Enabled:   $(systemctl is-enabled wg-quick@wormlogic.service 2>/dev/null || true)"
-    echo
-    echo "Action required on Heighliner:"
-    echo "Create system/vps01/ubuntu/wireguard/peers/70-farcaster.conf:"
-    echo
-    echo "  [Peer]"
-    echo "  # Farcaster / vps02"
-    echo "  PublicKey = $WORMLOGIC_VPN_PUBLIC_KEY"
-    echo "  AllowedIPs = ${WORMLOGIC_VPN_IP:-10.8.0.6/32}"
-    echo
-    echo "Then rerun Heighliner's WireGuard setup/configure-system reconciliation."
-    echo "Handshake can occur after this peer is installed on Heighliner."
   else
     echo "  ✗ Wormlogic not configured"
   fi
@@ -1146,6 +1150,7 @@ main() {
   # Configure and start the Wormlogic client; Heighliner enrollment follows.
   # Acquisitions networking belongs to the separate host configuration stage.
   setup_wormlogic_vpn
+  write_heighliner_peer_fragment
   configure_automate_resolution
   configure_host_system
   refresh_wireguard_recovery

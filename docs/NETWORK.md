@@ -56,6 +56,7 @@ These are configuration observations. Full DHCP acquisition from a client in eac
 | Pi-hole 1 | `10.42.20.10` | Physical resolver; SSH and DNS work |
 | Pi-hole 2 | `10.42.20.11` | Arrakis macvlan container; DNS works |
 | Heighliner (`vps01`, hostname `wormlogic-vps01`) | `10.8.0.1`; administrative hostname `vpn.wormlogic.com` | VPS, WireGuard hub and operations services; SSH works |
+| Farcaster (`vps02`) | public `23.252.124.57`; VPN `10.8.0.6` | VPS and future Acquisitions tunnel endpoint; SSH and Wormlogic tunnel work |
 | Chapterhouse hardware (pre-`server04` deployment) | `10.42.42.3` | Existing host/hardware currently observed on TRUSTED. `server04` preparation supersedes the retired `desktop01` provisioning identity; the planned server deployment target is listed below. |
 
 Arrakis has a host-side Pi-hole macvlan shim at `10.42.20.100/32`, with a route to `10.42.20.11`. It is host/container connectivity plumbing, not another Pi-hole instance.
@@ -68,7 +69,7 @@ The owner confirms **Shai-Hulud, Chapterhouse and Caladan do not yet exist as de
 
 | Planned system | Configured future LAN address / reservation | Prepared Wormlogic VPN assignment |
 |---|---|---|
-| Chapterhouse (`server04`) | `10.42.20.3` | `10.8.0.6/32` |
+| Chapterhouse (`server04`) | `10.42.20.3` | `10.8.0.7/32` |
 | Caladan (`server03`) | `10.42.20.6` | `10.8.0.5/32` |
 | Shai-Hulud control reservation | `10.42.25.3` (`kube_cont01`) | — |
 | Shai-Hulud worker reservations | `10.42.25.4–6` (`kube_work01–03`) | — |
@@ -114,13 +115,14 @@ The administrative network is `10.8.0.0/24`:
 | `10.8.0.2` | Midway |
 | `10.8.0.3` | Arrakis |
 | `10.8.0.4` | IX |
+| `10.8.0.6` | Farcaster |
 
 Prepared but not yet deployed server peer assignments are:
 
 | Address | Prepared system |
 |---|---|
 | `10.8.0.5/32` | Caladan (`server03`) |
-| `10.8.0.6/32` | Chapterhouse (`server04`) |
+| `10.8.0.7/32` | Chapterhouse (`server04`) |
 
 These prepared addresses come from the current host bootstrap/recovery configuration. They are not evidence that the peers are enrolled on Heighliner or currently reachable.
 

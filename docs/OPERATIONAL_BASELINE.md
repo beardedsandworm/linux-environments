@@ -28,10 +28,11 @@
 | Arrakis | `server01` | Verified deployed host | `10.8.0.3/32` |
 | IX | `server02` | Verified deployed host | `10.8.0.4/32` |
 | Caladan | `server03` | Prepared, not yet deployed | `10.8.0.5/32` |
-| Chapterhouse | `server04` | Prepared, not yet deployed | `10.8.0.6/32` |
+| Chapterhouse | `server04` | Prepared, not yet deployed | `10.8.0.7/32` |
 | laptop01 | workstation | Deployed | existing client identity; assignment should be read from live/recovery state |
 | laptop02 | workstation | Deployed | `10.8.0.11/32` |
 | Heighliner | `vps01` | Verified deployed host | `10.8.0.1/24` hub |
+| Farcaster | `vps02` | Verified deployed host | `10.8.0.6/32` |
 | Midway | firewall/router | Verified deployed infrastructure | `10.8.0.2` |
 
 `desktop01` is retired as a provisioning target. Chapterhouse preparation now uses `server04`.
@@ -127,7 +128,8 @@ Current/deployment-prepared assignments relevant to the server fleet are:
 10.8.0.3   Arrakis
 10.8.0.4   IX
 10.8.0.5   Caladan       (prepared)
-10.8.0.6   Chapterhouse  (prepared)
+10.8.0.6   Farcaster
+10.8.0.7   Chapterhouse  (prepared)
 10.8.0.11  laptop02
 ```
 

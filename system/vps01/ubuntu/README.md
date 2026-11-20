@@ -44,7 +44,8 @@ system/vps01/ubuntu/
 │   ├── heighliner.pub
 │   ├── sysctl.conf
 │   ├── wormlogic.nft
-│   └── wormlogic-wg.service
+│   ├── wormlogic-wg.service
+│   └── peers/
 └── pvp/
     ├── setup.sh
     ├── pvp-routing.sh
@@ -52,7 +53,17 @@ system/vps01/ubuntu/
     └── wormlogic-pvp.service
 ```
 
-Additional public peer/reference files may exist under the component directories where required by the setup implementation, but they are **not the recovery authority for the WireGuard interfaces**.
+Each non-Heighliner bootstrap writes its canonical public peer fragment under
+`system/vps01/ubuntu/wireguard/peers/` after credential reconciliation and
+tunnel setup. The writer overwrites the host's existing fragment because the
+bootstrap has already selected the authoritative identity. Heighliner's setup
+then assembles `wg0` from the sorted fragments.
+
+The sequence is `20-arrakis`, `30-ix`, `40-laptop01`, `50-laptop02`,
+`60-pixel8pro`, `70-farcaster`, `80-caladan`, and `90-chapterhouse`; Midway
+retains the `10-` slot. These public fragments simplify enrollment and key
+rollover, but they are **not the recovery authority for client private keys or
+complete WireGuard configurations**.
 
 The authoritative recovery state is:
 
@@ -238,6 +249,9 @@ Heighliner   10.8.0.1/24   UDP 51820
 Midway       10.8.0.2/32
 Arrakis      10.8.0.3/32
 IX           10.8.0.4/32
+Caladan      10.8.0.5/32  (prepared)
+Farcaster    10.8.0.6/32
+Chapterhouse 10.8.0.7/32  (prepared)
 laptop01     10.8.0.10/32
 laptop02     10.8.0.11/32
 Pixel 8 Pro  10.8.0.20/32
