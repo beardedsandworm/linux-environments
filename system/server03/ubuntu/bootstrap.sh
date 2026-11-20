@@ -802,6 +802,29 @@ install_automation_privilege_helpers() {
 }
 
 # --------------------------------------------------
+# Keep the user systemd manager available after logout and at boot
+# --------------------------------------------------
+setup_user_linger() {
+  local user_name
+  user_name="$(id -un)"
+
+  if [[ "$(loginctl show-user "$user_name" --property=Linger --value 2>/dev/null)" == "yes" ]]; then
+    echo "✓ User lingering already enabled for $user_name"
+    return 0
+  fi
+
+  echo "⚙ Enabling user lingering for $user_name..."
+  sudo loginctl enable-linger "$user_name"
+
+  if [[ "$(loginctl show-user "$user_name" --property=Linger --value 2>/dev/null)" != "yes" ]]; then
+    echo "✗ Failed to enable user lingering for $user_name"
+    exit 1
+  fi
+
+  echo "✓ User lingering enabled for $user_name"
+}
+
+# --------------------------------------------------
 # Install and enable package export service/timer
 # --------------------------------------------------
 setup_package_export() {
@@ -1351,6 +1374,7 @@ main() {
   set_user_environment_defaults
   setup_wormlogic_vpn
   configure_host_system
+  setup_user_linger
   setup_package_export
   setup_credential_capture
   setup_system_update

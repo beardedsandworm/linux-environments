@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import stat
 import subprocess
 import tempfile
@@ -276,9 +277,9 @@ fi
         self.assertIn("notify.sh", system_update)
         self.assertNotIn("discord-webhook", system_update)
 
-    def test_retired_services_are_absent_except_from_temporary_cleanup(self) -> None:
+    def test_retired_services_are_absent(self) -> None:
         retired = ("repo-update-check", "dotfiles-change-check")
-        allowed = {REPO / "scripts" / "update-reporting-services.sh", Path(__file__).resolve()}
+        allowed = {Path(__file__).resolve()}
         for path in REPO.rglob("*"):
             if not path.is_file() or path in allowed or ".git" in path.parts:
                 continue
@@ -459,57 +460,121 @@ fi
         self.assertIsNone(details["updates_applied_by_manager"]["snap"])
         self.assertIn("before:snap", details["applied_probe_errors"])
 
-    def test_temporary_updater_fails_when_retired_timer_remains_active(self) -> None:
-        updater = SCRIPTS / "update-reporting-services.sh"
-        write_executable(
-            self.bin / "systemctl",
-            '''#!/usr/bin/env bash
-case "$*" in
-  *"disable --now repo-update-check.timer"*) exit 1 ;;
-  *"is-active --quiet repo-update-check.timer"*) exit 0 ;;
-  *) exit 0 ;;
-esac
-''',
-        )
-        result = self.run_script(updater)
-        self.assertNotEqual(result.returncode, 0)
-        self.assertIn("repo-update-check.timer", result.stderr + result.stdout)
+    def test_reporting_migration_artifacts_are_removed(self) -> None:
+        self.assertFalse((SCRIPTS / "update-reporting-services.sh").exists())
+        readme = (REPO / "README.md").read_text(encoding="utf-8")
+        for phrase in (
+            "update-reporting-services.sh",
+            "During this reporting migration",
+            "temporary updater",
+            "temporary top-level compatibility adapter",
+        ):
+            self.assertNotIn(phrase, readme)
 
-    def test_temporary_updater_installs_current_units_and_removes_retired_units(self) -> None:
-        updater = SCRIPTS / "update-reporting-services.sh"
-        self.assertTrue(updater.exists())
-        systemctl_log = self.root / "systemctl.log"
+    def test_non_laptop_bootstraps_enable_user_linger_idempotently(self) -> None:
+        non_laptop_bootstraps = (
+            REPO / "system/server01/ubuntu/bootstrap.sh",
+            REPO / "system/server02/ubuntu/bootstrap.sh",
+            REPO / "system/server03/ubuntu/bootstrap.sh",
+            REPO / "system/server04/ubuntu/bootstrap.sh",
+            REPO / "system/vps01/ubuntu/bootstrap.sh",
+            REPO / "system/vps02/ubuntu/bootstrap.sh",
+        )
+        laptop_bootstraps = (
+            REPO / "system/laptop01/arch/bootstrap.sh",
+            REPO / "system/laptop02/ubuntu/bootstrap.sh",
+        )
+
+        for path in non_laptop_bootstraps:
+            text = path.read_text(encoding="utf-8")
+            self.assertIn("setup_user_linger() {", text, path)
+            self.assertIn('loginctl show-user "$user_name" --property=Linger --value', text, path)
+            self.assertIn('sudo loginctl enable-linger "$user_name"', text, path)
+            main_body = text[text.index("main() {") :]
+            self.assertIn("\n  setup_user_linger\n", main_body, path)
+            self.assertLess(
+                main_body.index("\n  setup_user_linger\n"),
+                main_body.index("\n  setup_package_export\n"),
+                path,
+            )
+
+        for path in laptop_bootstraps:
+            text = path.read_text(encoding="utf-8")
+            self.assertNotIn("setup_user_linger", text, path)
+
+    def test_user_linger_setup_handles_existing_and_failed_states(self) -> None:
+        bootstrap_paths = (
+            REPO / "system/server01/ubuntu/bootstrap.sh",
+            REPO / "system/server02/ubuntu/bootstrap.sh",
+            REPO / "system/server03/ubuntu/bootstrap.sh",
+            REPO / "system/server04/ubuntu/bootstrap.sh",
+            REPO / "system/vps01/ubuntu/bootstrap.sh",
+            REPO / "system/vps02/ubuntu/bootstrap.sh",
+        )
+        functions = set()
+        for path in bootstrap_paths:
+            text = path.read_text(encoding="utf-8")
+            match = re.search(r"setup_user_linger\(\) \{\n.*?\n\}", text, re.DOTALL)
+            self.assertIsNotNone(match, path)
+            functions.add(match.group(0))
+        self.assertEqual(len(functions), 1, "linger setup should remain identical across non-laptop bootstraps")
+
+        linger_script = self.root / "test-user-linger.sh"
         write_executable(
-            self.bin / "systemctl",
+            linger_script,
+            "#!/usr/bin/env bash\nset -euo pipefail\n" + functions.pop() + "\nsetup_user_linger\n",
+        )
+        linger_state = self.root / "linger-state"
+        sudo_log = self.root / "sudo.log"
+        write_executable(
+            self.bin / "id",
+            '#!/usr/bin/env bash\n[[ "$*" == "-un" ]] || exit 2\nprintf "testuser\\n"\n',
+        )
+        write_executable(
+            self.bin / "loginctl",
             '''#!/usr/bin/env bash
-printf "%s\\n" "$*" >>"$MOCK_SYSTEMCTL_LOG"
-case "$*" in
-  *"is-enabled --quiet repo-update-check.timer"*|*"is-active --quiet repo-update-check.timer"*|*"is-active --quiet repo-update-check.service"*) exit 1 ;;
-  *"is-enabled --quiet dotfiles-change-check.timer"*|*"is-active --quiet dotfiles-change-check.timer"*|*"is-active --quiet dotfiles-change-check.service"*) exit 1 ;;
-esac
-exit 0
+[[ "$*" == "show-user testuser --property=Linger --value" ]] || exit 2
+cat "$MOCK_LINGER_STATE"
 ''',
         )
-        user_units = self.config / "systemd" / "user"
-        user_units.mkdir(parents=True)
-        for name in ("repo-update-check", "dotfiles-change-check"):
-            (user_units / f"{name}.service").write_text("stale\n", encoding="utf-8")
-            (user_units / f"{name}.timer").write_text("stale\n", encoding="utf-8")
-        result = self.run_script(
-            updater,
-            env={"MOCK_SYSTEMCTL_LOG": str(systemctl_log)},
+        write_executable(
+            self.bin / "sudo",
+            '''#!/usr/bin/env bash
+printf "%s\\n" "$*" >>"$MOCK_SUDO_LOG"
+[[ "$*" == "loginctl enable-linger testuser" ]] || exit 2
+case "$MOCK_SUDO_MODE" in
+  enable) printf "yes\\n" >"$MOCK_LINGER_STATE" ;;
+  nochange) ;;
+  fail) exit 42 ;;
+  *) exit 2 ;;
+esac
+''',
         )
+        env = {
+            "MOCK_LINGER_STATE": str(linger_state),
+            "MOCK_SUDO_LOG": str(sudo_log),
+        }
+
+        linger_state.write_text("yes\n", encoding="utf-8")
+        result = self.run_script(linger_script, env={**env, "MOCK_SUDO_MODE": "fail"})
         self.assertEqual(result.returncode, 0, result.stderr)
-        for name in ("repo-update-check", "dotfiles-change-check"):
-            self.assertFalse((user_units / f"{name}.service").exists())
-            self.assertFalse((user_units / f"{name}.timer").exists())
-        for name in ("disk-space-check", "package-export", "system-update"):
-            self.assertTrue((user_units / f"{name}.service").exists())
-            self.assertTrue((user_units / f"{name}.timer").exists())
-        log = systemctl_log.read_text(encoding="utf-8")
-        self.assertIn("enable --now disk-space-check.timer", log)
-        self.assertIn("enable --now package-export.timer", log)
-        self.assertIn("enable --now system-update.timer", log)
+        self.assertIn("already enabled", result.stdout)
+        self.assertFalse(sudo_log.exists())
+
+        linger_state.write_text("no\n", encoding="utf-8")
+        result = self.run_script(linger_script, env={**env, "MOCK_SUDO_MODE": "enable"})
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(linger_state.read_text(encoding="utf-8"), "yes\n")
+        self.assertIn("loginctl enable-linger testuser", sudo_log.read_text(encoding="utf-8"))
+
+        linger_state.write_text("no\n", encoding="utf-8")
+        result = self.run_script(linger_script, env={**env, "MOCK_SUDO_MODE": "fail"})
+        self.assertNotEqual(result.returncode, 0)
+
+        linger_state.write_text("no\n", encoding="utf-8")
+        result = self.run_script(linger_script, env={**env, "MOCK_SUDO_MODE": "nochange"})
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("Failed to enable user lingering", result.stdout)
 
 
 if __name__ == "__main__":

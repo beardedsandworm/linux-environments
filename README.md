@@ -450,16 +450,7 @@ The common host reporters deliberately have different signal policies:
 * `package-export` emits only when a tracked package inventory changes.
 * `disk-space-check` emits only when the configured capacity threshold is reached.
 
-All three use `scripts/notify.sh`. The transport accepts explicit producer, event type, severity, lifecycle and deduplication fields, queues failed deliveries locally, and has no direct Discord authority. A temporary top-level compatibility adapter remains in its payload until the replacement internal n8n workflows are deployed.
-
-During this reporting migration, already-provisioned clients must reconcile their installed user units after pulling the verified commit:
-
-```bash
-git pull --ff-only
-./scripts/update-reporting-services.sh
-```
-
-The temporary updater removes retired units, installs the three current unit pairs, reloads the user manager and verifies timer state without manually running any scheduled job. Remove the script and this migration note after every provisioned client has converged.
+All three use `scripts/notify.sh`. The transport accepts explicit producer, event type, severity, lifecycle and deduplication fields, queues failed deliveries locally, and has no direct Discord authority.
 
 The objective is not merely:
 

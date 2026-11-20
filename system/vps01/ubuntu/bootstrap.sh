@@ -763,6 +763,26 @@ user_systemd_available() {
   systemctl --user status >/dev/null 2>&1
 }
 
+setup_user_linger() {
+  local user_name
+  user_name="$(id -un)"
+
+  if [[ "$(loginctl show-user "$user_name" --property=Linger --value 2>/dev/null)" == "yes" ]]; then
+    echo "✓ User lingering already enabled for $user_name"
+    return 0
+  fi
+
+  echo "⚙ Enabling user lingering for $user_name..."
+  sudo loginctl enable-linger "$user_name"
+
+  if [[ "$(loginctl show-user "$user_name" --property=Linger --value 2>/dev/null)" != "yes" ]]; then
+    echo "✗ Failed to enable user lingering for $user_name"
+    exit 1
+  fi
+
+  echo "✓ User lingering enabled for $user_name"
+}
+
 setup_user_service_pair() {
   local name="$1"
   local service_source="$REPO_ROOT/systemd/${name}.service"
@@ -1026,6 +1046,7 @@ main() {
   configure_host_system
   refresh_wireguard_recovery
 
+  setup_user_linger
   setup_package_export
   setup_system_update
   setup_shared_monitoring
