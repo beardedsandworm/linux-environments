@@ -986,6 +986,7 @@ show_summary() {
 
   echo
   echo "WireGuard:"
+  echo "  - Public key: $(cat "${XDG_CONFIG_HOME:-$HOME/.config}/dotfiles/wireguard/wg0.public-key")"
   if systemctl is-enabled --quiet wg-quick@wg0.service 2>/dev/null; then
     echo "  - Wormlogic client wg0: $(systemctl is-active wg-quick@wg0.service 2>/dev/null || true)"
   else
