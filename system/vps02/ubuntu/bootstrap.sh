@@ -536,124 +536,201 @@ configure_linux_environments_git_access() {
 }
 
 # --------------------------------------------------
-# Reconcile WireGuard recovery state
-# - Farcaster is a CLIENT of the existing Wormlogic VPN (wg0)
-# - seed only its own wg0 key if no saved state exists
-# - the separate acquisitions tunnel belongs to configure-system.sh later
-# - recovery artifacts are encrypted *.conf files
+# Reconcile the standard Wormlogic client, matching the other hosts.
+# First rerun accepts the older vps02 wg0 stub as an identity source.
+# New installs generate the real wormlogic.conf directly in setup.
 # --------------------------------------------------
-has_local_wireguard_configs() {
-  sudo test -d /etc/wireguard && \
-    sudo find /etc/wireguard -maxdepth 1 -type f -name '*.conf' -print -quit 2>/dev/null | grep -q .
-}
-
-has_repo_wireguard_configs() {
-  local secret_dir="$1"
-
-  [[ -d "$secret_dir" ]] && \
-    find "$secret_dir" -maxdepth 1 -type f -name '*.conf.enc' -print -quit | grep -q .
-}
-
-generate_initial_farcaster_wireguard_config() {
-  local capture_script="$1"
-  local restore_script="$2"
-  local private_key
-
-  # Preserve this identity when configuring the Wormlogic peer later.
-  # A private-key-only config is an enrollment artifact, NOT a live tunnel.
-  sudo install -d -m 700 /etc/wireguard
-  private_key="$(wg genkey)"
-  printf '[Interface]\nPrivateKey = %s\n' "$private_key" | \
-    sudo install -m 600 /dev/stdin /etc/wireguard/wg0.conf
-
-  bash "$capture_script" --force
-  bash "$restore_script" --force
-
-  echo "✓ Generated and captured Farcaster's Wormlogic wg0 identity"
-  echo "⚠ wg0 peer enrollment and routing still require the real address and server public key."
-}
-
 reconcile_wireguard_credentials() {
   local machine_id wireguard_secret_dir capture_script restore_script staged_dir
   local local_exists=0 repo_exists=0
 
   echo "🔐 Reconciling WireGuard credentials..."
-
-  if ! command -v wg >/dev/null 2>&1; then
-    echo "✗ wg not found. wireguard-tools must be installed first."
+  command -v wg >/dev/null 2>&1 || {
+    echo "✗ wg not found. Install wireguard-tools first." >&2
     exit 1
-  fi
+  }
 
   machine_id="$(tr -d '\r\n' < "$MACHINE_ID_FILE")"
   wireguard_secret_dir="$REPO_ROOT/secrets/$machine_id/wireguard"
   staged_dir="${XDG_CONFIG_HOME:-$HOME/.config}/dotfiles/wireguard"
   capture_script="$REPO_ROOT/scripts/capture-wireguard-credentials.sh"
   restore_script="$REPO_ROOT/scripts/restore-wireguard-credentials.sh"
-
   require_credential_script "$capture_script"
   require_credential_script "$restore_script"
 
-  has_local_wireguard_configs && local_exists=1
-  has_repo_wireguard_configs "$wireguard_secret_dir" && repo_exists=1
+  # On an upgraded Farcaster, wg0.conf is an identity-only legacy artifact.
+  if sudo test -f /etc/wireguard/wormlogic.conf ||
+     sudo test -f /etc/wireguard/wg0.conf; then
+    local_exists=1
+  fi
+  if [[ -f "$wireguard_secret_dir/wormlogic.conf.enc" ||
+        -f "$wireguard_secret_dir/wg0.conf.enc" ]]; then
+    repo_exists=1
+  fi
 
+  WIREGUARD_GENERATE_NEW=0
   if (( local_exists && repo_exists )); then
     choose_authoritative_source "WireGuard"
     if [[ "$AUTHORITATIVE_SOURCE" == "local" ]]; then
-      echo "• Local WireGuard configs selected as authoritative"
+      echo "• Local WireGuard config selected as authoritative"
       bash "$capture_script" --force
       bash "$restore_script" --force
     else
-      echo "• Repository WireGuard configs selected as authoritative"
+      echo "• Repository WireGuard config selected as authoritative"
       bash "$restore_script" --force
     fi
   elif (( local_exists )); then
-    echo "✓ Local WireGuard configs found; no repository copy exists"
+    echo "✓ Local WireGuard config found; no repository copy exists"
     bash "$capture_script"
     bash "$restore_script" --force
   elif (( repo_exists )); then
-    echo "✓ Repository WireGuard configs found; restoring them"
+    echo "✓ Repository WireGuard config found; restoring it"
     bash "$restore_script" --force
   else
-    echo "• No local or repository WireGuard state; generating Farcaster's wg0 identity..."
-    generate_initial_farcaster_wireguard_config "$capture_script" "$restore_script"
+    echo "• No local or repository WireGuard config found"
+    echo "  A complete Wormlogic identity will be generated during VPN setup."
+    WIREGUARD_GENERATE_NEW=1
+    rm -f -- "$staged_dir/wormlogic.conf" "$staged_dir/wormlogic.public-key"
   fi
 
-  if [[ ! -f "$staged_dir/wg0.conf" || ! -f "$staged_dir/wg0.public-key" ]]; then
-    echo "✗ WireGuard reconciliation is missing expected wg0 recovery state"
+  if (( WIREGUARD_GENERATE_NEW == 0 )) &&
+     [[ ! -f "$staged_dir/wormlogic.conf" && ! -f "$staged_dir/wg0.conf" ]]; then
+    echo "✗ WireGuard reconciliation did not recover a client identity" >&2
+    exit 1
+  fi
+  echo "✓ WireGuard identity and recovery state ready"
+}
+
+# --------------------------------------------------
+# Set up the standard Wormlogic client exactly like other fleet hosts.
+# Preserve Farcaster's existing wg0 key from the previous bootstrap.
+# The completed config is then captured using the shared recovery helpers.
+# --------------------------------------------------
+setup_wormlogic_vpn() {
+  local vpn_name="wormlogic"
+  local vps_host="vpn.wormlogic.com"
+  local vpn_allowed_ips="10.8.0.0/24, 10.42.0.0/16"
+  local default_vpn_ip="10.8.0.6/32"
+  local credential_dir="${XDG_CONFIG_HOME:-$HOME/.config}/dotfiles/wireguard"
+  local staged_conf="$credential_dir/$vpn_name.conf"
+  local legacy_conf="$credential_dir/wg0.conf"
+  local staged_public="$credential_dir/$vpn_name.public-key"
+  local target_conf="/etc/wireguard/$vpn_name.conf"
+  local heighliner_key="$REPO_ROOT/system/vps01/ubuntu/wireguard/heighliner.pub"
+  local capture_script="$REPO_ROOT/scripts/capture-wireguard-credentials.sh"
+  local restore_script="$REPO_ROOT/scripts/restore-wireguard-credentials.sh"
+  local source_conf private_key vpn_ip vps_public_key existing_peer_key generated_conf
+
+  echo "🔐 Setting up Wormlogic WireGuard client..."
+  require_credential_script "$capture_script"
+  require_credential_script "$restore_script"
+
+  [[ -f "$heighliner_key" ]] || {
+    echo "✗ Missing trusted Heighliner WireGuard public key: $heighliner_key" >&2
+    exit 1
+  }
+  vps_public_key="$(tr -d '\r\n' < "$heighliner_key")"
+  [[ "$vps_public_key" =~ ^[A-Za-z0-9+/]{43}=$ ]] || {
+    echo "✗ Invalid tracked Heighliner public key" >&2
+    exit 1
+  }
+
+  mkdir -p "$credential_dir"
+  chmod 700 "$credential_dir"
+  if [[ -f "$staged_conf" ]]; then
+    source_conf="$staged_conf"
+    echo "✓ Reusing recovered Wormlogic identity"
+  elif [[ -f "$legacy_conf" ]]; then
+    source_conf="$legacy_conf"
+    echo "✓ Reusing existing Farcaster wg0 key (no new key generated)"
+  elif (( WIREGUARD_GENERATE_NEW == 1 )); then
+    source_conf=""
+    echo "• Generating new WireGuard identity for $EXPECTED_MACHINE..."
+  else
+    echo "✗ No recovered WireGuard identity found in $credential_dir" >&2
     exit 1
   fi
 
-  echo "✓ Wormlogic wg0 identity and recovery state ready"
-}
-
-# Enable a *completed* client config, if the operator has already enrolled
-# Farcaster with Heighliner. Do not pretend that a seeded private key is a VPN.
-activate_wormlogic_client_if_ready() {
-  local config=/etc/wireguard/wg0.conf
-  if ! sudo test -f "$config"; then
-    echo "⚠ No wg0.conf yet; Wormlogic enrollment pending"
-    return 0
+  if [[ -n "$source_conf" ]]; then
+    private_key="$(awk -F '=' '/^[[:space:]]*PrivateKey[[:space:]]*=/ {gsub(/[[:space:]]/, "", $2); print $2; exit}' "$source_conf")"
+  else
+    private_key="$(wg genkey)"
+  fi
+  if [[ -z "$private_key" ]] || ! printf '%s\n' "$private_key" | wg pubkey >/dev/null 2>&1; then
+    echo "✗ Missing or invalid WireGuard private key in $source_conf" >&2
+    exit 1
   fi
 
-  if ! sudo grep -Eq '^Address[[:space:]]*=' "$config" ||
-     ! sudo grep -Eq '^\[Peer\]' "$config" ||
-     ! sudo grep -Eq '^PublicKey[[:space:]]*=' "$config" ||
-     ! sudo grep -Eq '^Endpoint[[:space:]]*=' "$config" ||
-     ! sudo grep -Eq '^AllowedIPs[[:space:]]*=' "$config"; then
-    echo "⚠ wg0 is an identity stub; complete/enroll Wormlogic client before activation"
-    return 0
+  vpn_ip=""
+  if [[ -n "$source_conf" ]]; then
+    vpn_ip="$(awk '
+      /^[[:space:]]*\[Interface\][[:space:]]*$/ { in_interface=1; next }
+      /^[[:space:]]*\[/ { in_interface=0 }
+      in_interface && /^[[:space:]]*Address[[:space:]]*=/ {
+        sub(/^[^=]*=[[:space:]]*/, ""); gsub(/[[:space:]]/, ""); print; exit
+      }' "$source_conf")"
+  fi
+  vpn_ip="${vpn_ip:-${WORMLOGIC_VPN_IP:-$default_vpn_ip}}"
+  [[ "$vpn_ip" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+/[0-9]+$ ]] || {
+    echo "✗ Invalid VPN IP/CIDR: $vpn_ip" >&2
+    exit 1
+  }
+
+  existing_peer_key=""
+  if [[ -n "$source_conf" ]]; then
+    existing_peer_key="$(awk '
+      /^[[:space:]]*\[Peer\][[:space:]]*$/ { in_peer=1; next }
+      /^[[:space:]]*\[/ { in_peer=0 }
+      in_peer && /^[[:space:]]*PublicKey[[:space:]]*=/ {
+        sub(/^[^=]*=[[:space:]]*/, ""); gsub(/[[:space:]]/, ""); print; exit
+      }' "$source_conf")"
+  fi
+  if [[ -n "$existing_peer_key" && "$existing_peer_key" != "$vps_public_key" ]]; then
+    echo "✗ Recovered Wormlogic peer differs from the tracked Heighliner public key" >&2
+    exit 1
   fi
 
-  # Farcaster needs a private management route, not a default-route VPN.
-  # Refuse automatic activation if an operator supplied a full-tunnel profile.
-  if sudo grep -Eq '^AllowedIPs[[:space:]]*=.*(0\.0\.0\.0/0|::/0)' "$config"; then
-    echo "⚠ wg0 requests a default route; review routing manually before activation"
-    return 0
+  generated_conf="$(mktemp "$credential_dir/.wormlogic.conf.XXXXXX")"
+  chmod 600 "$generated_conf"
+  {
+    echo "[Interface]"
+    echo "PrivateKey = $private_key"
+    echo "Address = $vpn_ip"
+    echo
+    echo "[Peer]"
+    echo "PublicKey = $vps_public_key"
+    echo "Endpoint = $vps_host:51820"
+    echo "AllowedIPs = $vpn_allowed_ips"
+    echo "PersistentKeepalive = 25"
+  } > "$generated_conf"
+
+  # Install and validate the real wg-quick interface name.
+  sudo install -d -m 700 /etc/wireguard
+  sudo install -m 600 "$generated_conf" "$target_conf"
+  rm -f -- "$generated_conf"
+  sudo wg-quick strip "$target_conf" >/dev/null
+
+  # Same authoritative live config -> encrypted recovery -> staged public key
+  # reconciliation as the other Wormlogic client bootstraps.
+  bash "$capture_script" --force
+  bash "$restore_script" --force
+
+  if [[ ! -f "$staged_public" ]] ||
+     [[ "$(tr -d '\r\n' < "$staged_public")" != "$(printf '%s\n' "$private_key" | wg pubkey)" ]]; then
+    echo "✗ Recovered Wormlogic public key does not match the installed identity" >&2
+    exit 1
   fi
 
-  echo "🌐 Enabling Farcaster's Wormlogic client wg0..."
-  sudo systemctl enable --now wg-quick@wg0.service
-  echo "✓ wg0 service started; verify handshake after enrolling its peer on Heighliner"
+  sudo systemctl enable --now "wg-quick@$vpn_name.service"
+
+  WORMLOGIC_VPN_MACHINE_ID="$EXPECTED_MACHINE"
+  WORMLOGIC_VPN_PUBLIC_KEY="$(tr -d '\r\n' < "$staged_public")"
+  WORMLOGIC_VPN_IP="$vpn_ip"
+
+  echo "✓ Wormlogic WireGuard client configured and enabled for boot"
+  echo "  Interface: wormlogic"
+  echo "  VPN IP:    $vpn_ip"
+  echo "  Config:    $target_conf"
 }
 
 # --------------------------------------------------
@@ -690,7 +767,7 @@ EOF_PATH
 
 # --------------------------------------------------
 # Apply optional machine-specific configuration
-# - the bootstrap handles the base Wormlogic client identity (wg0)
+# - the bootstrap configures the standard Wormlogic client
 # - future configure-system.sh will build the separate acquisitions tunnel
 # - service deployment is deliberately NOT part of the host bootstrap
 # --------------------------------------------------
@@ -985,14 +1062,27 @@ show_summary() {
   docker compose version || true
 
   echo
-  echo "WireGuard:"
-  echo "  - Public key: $(cat "${XDG_CONFIG_HOME:-$HOME/.config}/dotfiles/wireguard/wg0.public-key")"
-  if systemctl is-enabled --quiet wg-quick@wg0.service 2>/dev/null; then
-    echo "  - Wormlogic client wg0: $(systemctl is-active wg-quick@wg0.service 2>/dev/null || true)"
+  echo "WireGuard (Wormlogic peer):"
+  if [[ -n "${WORMLOGIC_VPN_PUBLIC_KEY:-}" ]]; then
+    echo "  Interface: wormlogic"
+    echo "  VPN IP:    ${WORMLOGIC_VPN_IP:-unknown}"
+    echo "  State:     $(systemctl is-active wg-quick@wormlogic.service 2>/dev/null || true)"
+    echo "  Enabled:   $(systemctl is-enabled wg-quick@wormlogic.service 2>/dev/null || true)"
+    echo
+    echo "Action required on Heighliner:"
+    echo "Create system/vps01/ubuntu/wireguard/peers/70-farcaster.conf:"
+    echo
+    echo "  [Peer]"
+    echo "  # Farcaster / vps02"
+    echo "  PublicKey = $WORMLOGIC_VPN_PUBLIC_KEY"
+    echo "  AllowedIPs = ${WORMLOGIC_VPN_IP:-10.8.0.6/32}"
+    echo
+    echo "Then rerun Heighliner's WireGuard setup/configure-system reconciliation."
+    echo "Handshake can occur after this peer is installed on Heighliner."
   else
-    echo "  - Wormlogic client wg0: staged, not enabled (peer setup pending)"
+    echo "  ✗ Wormlogic not configured"
   fi
-  echo "  - Acquisitions tunnel:   configure-system.sh stage (not bootstrapped here)"
+  echo "  - Acquisitions tunnel: configure-system.sh stage (not bootstrapped here)"
 }
 
 # --------------------------------------------------
@@ -1013,7 +1103,7 @@ prompt_reboot() {
 # --------------------------------------------------
 # Main bootstrap flow
 # - establish the common host baseline and durable credentials
-# - stage Wormlogic wg0 client; optional acquisitions configuration is separate
+# - configure the standard Wormlogic client; acquisitions configuration is separate
 # - finish with user services, Stow, state export, and verification summary
 # --------------------------------------------------
 main() {
@@ -1044,9 +1134,9 @@ main() {
   install_starship
   set_user_environment_defaults
 
-  # The Wormlogic client can start after its real peer config has been enrolled.
+  # Configure and start the Wormlogic client; Heighliner enrollment follows.
   # Acquisitions networking belongs to the separate host configuration stage.
-  activate_wormlogic_client_if_ready
+  setup_wormlogic_vpn
   configure_host_system
   refresh_wireguard_recovery
 
