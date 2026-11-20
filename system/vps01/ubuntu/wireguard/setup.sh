@@ -113,12 +113,16 @@ install_files() {
   local public_source="$2"
 
   sudo install -d -m 0700 /etc/wireguard
+  sudo install -d -m 0755 /etc/nftables.d
 
   sudo install -m 0600 "$config_temp" "$WG0_CONF"
   sudo install -m 0644 "$public_source" "$WG0_PUBLIC"
   sudo install -m 0644 "$SCRIPT_DIR/sysctl.conf" /etc/sysctl.d/99-wormlogic-network.conf
+  sudo install -m 0644 "$SCRIPT_DIR/wormlogic.nft" /etc/nftables.d/wormlogic-wg.nft
+  sudo install -m 0644 "$SCRIPT_DIR/wormlogic-wg.service" /etc/systemd/system/wormlogic-wg.service
 
   sudo sysctl --system >/dev/null
+  sudo systemctl daemon-reload
 }
 
 activate_wg0() {
@@ -135,12 +139,19 @@ activate_wg0() {
   else
     sudo systemctl start wg-quick@wg0.service
   fi
+
+  sudo systemctl enable wormlogic-wg.service
+  if systemctl is-active --quiet wormlogic-wg.service; then
+    sudo systemctl reload wormlogic-wg.service
+  else
+    sudo systemctl start wormlogic-wg.service
+  fi
 }
 
 main() {
   echo "🔐 Configuring Heighliner Wormlogic tunnel (wg0)..."
 
-  for command_name in wg wg-quick ip systemctl awk; do
+  for command_name in wg wg-quick ip nft systemctl awk; do
     require_command "$command_name"
   done
 
@@ -148,7 +159,8 @@ main() {
   require_file "$WG0_RECOVERED_PUBLIC" "recovered wg0 public key"
   require_file "$EXPECTED_PUBLIC_FILE" "expected Heighliner wg0 public key"
   require_file "$SCRIPT_DIR/sysctl.conf" "Wormlogic sysctl configuration"
-  require_file "$SCRIPT_DIR/configure-forwarding-policy.sh" "Wormlogic forwarding policy"
+  require_file "$SCRIPT_DIR/wormlogic.nft" "Wormlogic nftables rules"
+  require_file "$SCRIPT_DIR/wormlogic-wg.service" "Wormlogic systemd unit"
 
   local recovered_public expected_public
   recovered_public="$(tr -d '\r\n' < "$WG0_RECOVERED_PUBLIC")"
@@ -171,7 +183,6 @@ main() {
   wg-quick strip "$config_temp" > "$stripped_temp"
   chmod 600 "$stripped_temp"
 
-  "$SCRIPT_DIR/configure-forwarding-policy.sh"
   install_files "$config_temp" "$WG0_RECOVERED_PUBLIC"
   activate_wg0 "$stripped_temp"
 
@@ -184,7 +195,6 @@ main() {
   echo "  Interface:  wg0"
   echo "  Address:    $WG0_ADDRESS"
   echo "  ListenPort: UDP/$WG0_PORT"
-  echo "  Forwarding: UFW permits Farcaster HTTPS to Arrakis over wg0"
   echo "  Public key: $expected_public"
   echo "  External requirement: provider firewall permits UDP/$WG0_PORT"
 }

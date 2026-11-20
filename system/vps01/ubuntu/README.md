@@ -40,10 +40,11 @@ system/vps01/ubuntu/
 ├── bootstrap.sh
 ├── configure-system.sh
 ├── wireguard/
-│   ├── configure-forwarding-policy.sh
 │   ├── setup.sh
 │   ├── heighliner.pub
-│   └── sysctl.conf
+│   ├── sysctl.conf
+│   ├── wormlogic.nft
+│   └── wormlogic-wg.service
 └── pvp/
     ├── setup.sh
     ├── pvp-routing.sh
@@ -237,8 +238,6 @@ Heighliner   10.8.0.1/24   UDP 51820
 Midway       10.8.0.2/32
 Arrakis      10.8.0.3/32
 IX           10.8.0.4/32
-Farcaster    10.8.0.6/32
-Chapterhouse 10.8.0.7/32  (prepared)
 laptop01     10.8.0.10/32
 laptop02     10.8.0.11/32
 Pixel 8 Pro  10.8.0.20/32
@@ -282,15 +281,7 @@ PVP uses loose reverse-path filtering rather than disabling it globally.
 
 The obsolete duplicated iptables forwarding rules are not part of the recovery definition.
 
-UFW is authoritative for Wormlogic forwarding. The bootstrap installs one
-narrow routed rule allowing Farcaster (`10.8.0.6`) to reach Arrakis
-(`10.8.0.3`) on HTTPS and removes the superseded standalone nftables table and
-service. PVP retains its separate nftables policy without treating Docker's
-generated iptables-nft state as configuration authority. UFW's standard ICMP
-forwarding behavior remains available for network diagnostics. The bootstrap
-requires UFW to be active with its routed default already set to deny, then
-adds and verifies the exact Farcaster-to-Arrakis HTTPS exception. Other UFW
-policy remains independently authoritative and is not inferred from this rule.
+The current design owns an explicit nftables policy for Wormlogic/PVP forwarding without treating Docker's generated iptables-nft state as configuration authority.
 
 ---
 

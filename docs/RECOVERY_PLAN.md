@@ -116,8 +116,7 @@ Prepared server assignments are:
 Arrakis      server01   10.8.0.3/32
 IX           server02   10.8.0.4/32
 Caladan      server03   10.8.0.5/32
-Farcaster    vps02      10.8.0.6/32
-Chapterhouse server04   10.8.0.7/32
+Chapterhouse server04   10.8.0.6/32
 ```
 
 A genuinely new peer identity still requires approval/enrollment on Heighliner.

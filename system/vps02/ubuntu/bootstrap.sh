@@ -766,15 +766,6 @@ EOF_PATH
 }
 
 # --------------------------------------------------
-# Configure private service resolution
-# - host reporting reaches Arrakis through its Wormlogic tunnel address
-# - the shared helper owns exactly one /etc/hosts name without disturbing aliases
-# --------------------------------------------------
-configure_automate_resolution() {
-  "$REPO_ROOT/scripts/configure-host-override.sh" 10.8.0.3 automate.wormlogic.com
-}
-
-# --------------------------------------------------
 # Apply optional machine-specific configuration
 # - the bootstrap configures the standard Wormlogic client
 # - future configure-system.sh will build the separate acquisitions tunnel
@@ -1146,7 +1137,6 @@ main() {
   # Configure and start the Wormlogic client; Heighliner enrollment follows.
   # Acquisitions networking belongs to the separate host configuration stage.
   setup_wormlogic_vpn
-  configure_automate_resolution
   configure_host_system
   refresh_wireguard_recovery
 

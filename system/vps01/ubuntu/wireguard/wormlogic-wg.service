@@ -1,0 +1,14 @@
+[Unit]
+Description=Wormlogic wg0 forwarding policy
+After=network-online.target wg-quick@wg0.service
+Wants=network-online.target
+Requires=wg-quick@wg0.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/sbin/nft -f /etc/nftables.d/wormlogic-wg.nft
+ExecReload=/usr/sbin/nft -f /etc/nftables.d/wormlogic-wg.nft
+
+[Install]
+WantedBy=multi-user.target
