@@ -34,6 +34,7 @@ machine_label() {
   server02) echo "Ix" ;;
   server03) echo "Caladan" ;;
   vps01) echo "Heighliner" ;;
+  vps02) echo "Farcaster" ;;
   *) echo "Unknown Machine" ;;
   esac
 }
@@ -56,6 +57,7 @@ prompt_machine() {
       echo " 5) Heighliner"
       echo " 6) Ix"
       echo " 7) Caladan"
+      echo " 8) Farcaster"
       echo " 0) Exit"
     } >&2
 
@@ -91,6 +93,10 @@ prompt_machine() {
       echo "server03"
       return 0
       ;;
+    8)
+      echo "vps02"
+      return 0
+      ;;
     0)
       echo "exit"
       return 0
@@ -98,7 +104,7 @@ prompt_machine() {
     *)
       {
         echo "✗ Invalid selection: $choice"
-        echo " Please choose 0-7"
+        echo " Please choose 0-8"
         echo
       } >&2
       ;;
