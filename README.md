@@ -68,6 +68,7 @@ Define → Recover → Apply → Observe → Correct → Capture
 | 💾 Caladan | `server03` | Ubuntu | Storage / services host | Prepared / staged |
 | 🎮 Chapterhouse | `server04` | Ubuntu | Shared gaming / streaming / game-service host | Prepared / staged |
 | 🚀 Heighliner | `vps01` | Ubuntu | Public VPS / network edge | Deployed |
+| 🛰️ Farcaster | `vps02` | Ubuntu | External VPS / Acquisitions edge | Deployed |
 
 Each deployed or prepared machine has its own bootstrap path, host configuration, encrypted recovery model and machine identity.
 
@@ -341,7 +342,8 @@ Midway        10.8.0.2
 Arrakis       10.8.0.3
 IX            10.8.0.4
 Caladan       10.8.0.5   # prepared / staged
-Chapterhouse  10.8.0.6   # prepared / staged
+Farcaster     10.8.0.6
+Chapterhouse  10.8.0.7   # prepared / staged
 laptop01      10.8.0.10
 laptop02      10.8.0.11
 ```

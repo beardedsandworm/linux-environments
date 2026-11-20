@@ -678,6 +678,15 @@ EOF_PATH
 }
 
 # --------------------------------------------------
+# Configure private service resolution
+# - VPS reporting reaches Arrakis through its Wormlogic tunnel address
+# - the shared helper owns exactly one /etc/hosts name without disturbing aliases
+# --------------------------------------------------
+configure_automate_resolution() {
+  "$REPO_ROOT/scripts/configure-host-override.sh" 10.8.0.3 automate.wormlogic.com
+}
+
+# --------------------------------------------------
 # Apply required machine-specific system configuration
 # - vps01 configure-system.sh orchestrates the Wormlogic wg0 tunnel first
 # - the PVP privacy gateway is applied only after the base tunnel is ready
@@ -980,7 +989,7 @@ show_summary() {
     echo
     echo "Wormlogic tunnel:"
     echo "  - wg0:          $(systemctl is-active wg-quick@wg0.service 2>/dev/null || true)"
-    echo "  - forwarding:   $(systemctl is-active wormlogic-wg.service 2>/dev/null || true)"
+    echo "  - forwarding:   UFW ($(systemctl is-active ufw.service 2>/dev/null || true))"
   fi
 
   if systemctl is-enabled --quiet wg-quick@wg-pvp.service 2>/dev/null; then
@@ -1044,6 +1053,7 @@ main() {
   # Machine-specific system configuration is intentionally delegated. For
   # vps01 this orchestrates the Wormlogic wg0 tunnel first, then the PVP stack.
   configure_host_system
+  configure_automate_resolution
   refresh_wireguard_recovery
 
   setup_user_linger
