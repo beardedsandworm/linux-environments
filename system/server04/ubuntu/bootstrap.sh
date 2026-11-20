@@ -1119,7 +1119,7 @@ setup_wormlogic_vpn() {
       read -r -p "VPS public key: " vps_public_key
     fi
 
-    local default_vpn_ip="10.8.0.6/32"
+    local default_vpn_ip="10.8.0.7/32"
     peer_vpn_ip="${WORMLOGIC_VPN_IP:-}"
     if [[ -z "$peer_vpn_ip" ]]; then
       echo

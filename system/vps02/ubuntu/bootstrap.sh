@@ -652,7 +652,7 @@ setup_wormlogic_vpn() {
   fi
 
   if [[ -n "$source_conf" ]]; then
-    private_key="$(awk -F '=' '/^[[:space:]]*PrivateKey[[:space:]]*=/ {gsub(/[[:space:]]/, "", $2); print $2; exit}' "$source_conf")"
+    private_key="$(awk -F '=' '/^[[:space:]]*PrivateKey[[:space:]]*=/ {sub(/^[^=]*=[[:space:]]*/, ""); gsub(/[[:space:]]/, ""); print; exit}' "$source_conf")"
   else
     private_key="$(wg genkey)"
   fi
