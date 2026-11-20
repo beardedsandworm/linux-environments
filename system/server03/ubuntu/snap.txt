@@ -1,0 +1,3 @@
+core24
+hwctl
+snapd

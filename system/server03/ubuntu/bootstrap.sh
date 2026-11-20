@@ -360,7 +360,7 @@ ensure_sops() {
 
   sops_version="$(
     curl -fsSL https://api.github.com/repos/getsops/sops/releases/latest |
-      awk -F '"' '/"tag_name"/ {print $4; exit}'
+      jq -r '.tag_name'
   )"
 
   if [[ -z "$sops_version" ]]; then
