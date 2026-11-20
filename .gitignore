@@ -10,3 +10,6 @@ secrets/*
 __pycache__/
 *.py[cod]
 
+
+# Credential capture temporary files
+*.enc.tmp.*
