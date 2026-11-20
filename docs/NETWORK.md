@@ -143,7 +143,7 @@ Service DNS names need not identify the physical service host. Verified examples
 | Name | Resolution / ownership |
 |---|---|
 | `search.wormlogic.com` | Arrakis `10.42.20.4`, Caddy to SearXNG |
-| `automate.wormlogic.com` | Arrakis `10.42.20.4`, Caddy to the Arrakis n8n instance |
+| `automate.wormlogic.com` | Arrakis Caddy to n8n; LAN clients use `10.42.20.4`, while Heighliner and Farcaster use a bootstrap-managed host override to Arrakis's tunnel address `10.8.0.3` |
 | `ix.wormlogic.com` | Arrakis `10.42.20.4`, Caddy to IX `10.42.20.5:9119` |
 | `ops.wormlogic.com` | `10.8.0.1` from the tested home runtime; Heighliner Caddy/n8n operations plane |
 
