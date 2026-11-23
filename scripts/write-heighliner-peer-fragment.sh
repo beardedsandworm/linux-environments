@@ -18,7 +18,7 @@ trap 'cleanup; exit 130' INT
 trap 'cleanup; exit 143' TERM
 
 usage() {
-  echo "Usage: $0 <machine-id> <wireguard-public-key> <vpn-ip/32>" >&2
+  echo "Usage: $0 <machine-id> <wireguard-public-key> <vpn-ip/32> [additional-allowed-ip/32]" >&2
 }
 
 validate_public_key() {
@@ -48,7 +48,7 @@ validate_public_key() {
 }
 
 main() {
-  if (($# != 3)); then
+  if (($# < 3 || $# > 4)); then
     usage
     exit 64
   fi
@@ -56,13 +56,17 @@ main() {
   local machine_id="$1"
   local public_key="$2"
   local vpn_ip="$3"
+  local extra_allowed_ip="${4:-}"
   local filename label expected_ip target
+  local expected_extra_allowed_ip=""
+  local allowed_ips
 
   case "$machine_id" in
     server01)
       filename="20-arrakis.conf"
       label="Arrakis"
       expected_ip="10.8.0.3/32"
+      expected_extra_allowed_ip="10.42.20.4/32"
       ;;
     server02)
       filename="30-ix.conf"
@@ -112,6 +116,18 @@ main() {
     exit 65
   fi
 
+  if [[ "$extra_allowed_ip" != "$expected_extra_allowed_ip" ]]; then
+    echo "ERROR: unexpected additional AllowedIPs address for $machine_id" >&2
+    echo "  expected: ${expected_extra_allowed_ip:-<none>}" >&2
+    echo "  received: ${extra_allowed_ip:-<none>}" >&2
+    exit 65
+  fi
+
+  allowed_ips="$vpn_ip"
+  if [[ -n "$extra_allowed_ip" ]]; then
+    allowed_ips+=", $extra_allowed_ip"
+  fi
+
   mkdir -p -- "$PEER_DIR"
   target="$PEER_DIR/$filename"
   TEMP_FILE="$(mktemp "$PEER_DIR/.${filename}.tmp.XXXXXX")"
@@ -120,7 +136,7 @@ main() {
     echo "[Peer]"
     echo "# $label"
     echo "PublicKey = $public_key"
-    echo "AllowedIPs = $vpn_ip"
+    echo "AllowedIPs = $allowed_ips"
   } > "$TEMP_FILE"
 
   chmod 0644 "$TEMP_FILE"

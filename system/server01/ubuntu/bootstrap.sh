@@ -1055,7 +1055,8 @@ write_heighliner_peer_fragment() {
   "$writer" \
     "${WORMLOGIC_VPN_MACHINE_ID:?Wormlogic machine ID unavailable}" \
     "${WORMLOGIC_VPN_PUBLIC_KEY:?Wormlogic public key unavailable}" \
-    "${WORMLOGIC_VPN_IP:?Wormlogic VPN IP unavailable}"
+    "${WORMLOGIC_VPN_IP:?Wormlogic VPN IP unavailable}" \
+    "10.42.20.4/32"
 }
 
 setup_wormlogic_vpn() {

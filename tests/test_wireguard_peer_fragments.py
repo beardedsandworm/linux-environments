@@ -25,6 +25,7 @@ EXPECTED_PEERS = {
     "server03": ("80-caladan.conf", "Caladan", "10.8.0.5/32"),
     "server04": ("90-chapterhouse.conf", "Chapterhouse", "10.8.0.7/32"),
 }
+EXTRA_ALLOWED_IPS = {"server01": "10.42.20.4/32"}
 VALID_PUBLIC_KEY = "vysVMJfC4Avhiwirms+Bi1K2Xfll1XT0umhx33/qCVA="
 SECOND_PUBLIC_KEY = "PIuKfHEj+kmHv2P58PV0a9BulqGl00tmj2ZpOblvLS0="
 NONCANONICAL_PUBLIC_KEY = "A" * 42 + "B="
@@ -42,20 +43,27 @@ class WireGuardPeerFragmentTests(unittest.TestCase):
             for machine_id, (filename, label, address) in EXPECTED_PEERS.items():
                 target = peer_dir / filename
                 target.write_text("stale\n", encoding="utf-8")
+                args = [str(WRITER), machine_id, VALID_PUBLIC_KEY, address]
+                extra_allowed_ip = EXTRA_ALLOWED_IPS.get(machine_id)
+                if extra_allowed_ip:
+                    args.append(extra_allowed_ip)
                 result = subprocess.run(
-                    [str(WRITER), machine_id, VALID_PUBLIC_KEY, address],
+                    args,
                     text=True,
                     capture_output=True,
                     check=False,
                     env=env,
                 )
                 self.assertEqual(result.returncode, 0, result.stderr)
+                allowed_ips = address
+                if extra_allowed_ip:
+                    allowed_ips = f"{allowed_ips}, {extra_allowed_ip}"
                 self.assertEqual(
                     target.read_text(encoding="utf-8"),
                     "[Peer]\n"
                     f"# {label}\n"
                     f"PublicKey = {VALID_PUBLIC_KEY}\n"
-                    f"AllowedIPs = {address}\n",
+                    f"AllowedIPs = {allowed_ips}\n",
                 )
                 self.assertEqual(target.stat().st_mode & 0o777, 0o644)
 
@@ -69,7 +77,10 @@ class WireGuardPeerFragmentTests(unittest.TestCase):
 
             for args in (
                 ("vps01", VALID_PUBLIC_KEY, "10.8.0.1/24"),
+                ("server01", VALID_PUBLIC_KEY, "10.8.0.3/32"),
+                ("server01", VALID_PUBLIC_KEY, "10.8.0.3/32", "10.42.20.5/32"),
                 ("server03", VALID_PUBLIC_KEY, "10.8.0.7/32"),
+                ("server04", VALID_PUBLIC_KEY, "10.8.0.7/32", "10.42.20.4/32"),
                 ("server04", "not-a-key", "10.8.0.7/32"),
                 ("server04", NONCANONICAL_PUBLIC_KEY, "10.8.0.7/32"),
             ):
@@ -94,7 +105,13 @@ class WireGuardPeerFragmentTests(unittest.TestCase):
             env["REPO_ROOT"] = str(repo)
 
             first = subprocess.run(
-                [str(WRITER), "server01", VALID_PUBLIC_KEY, "10.8.0.3/32"],
+                [
+                    str(WRITER),
+                    "server01",
+                    VALID_PUBLIC_KEY,
+                    "10.8.0.3/32",
+                    "10.42.20.4/32",
+                ],
                 text=True,
                 capture_output=True,
                 check=False,
@@ -103,7 +120,13 @@ class WireGuardPeerFragmentTests(unittest.TestCase):
             self.assertEqual(first.returncode, 0, first.stderr)
 
             rollover = subprocess.run(
-                [str(WRITER), "server01", SECOND_PUBLIC_KEY, "10.8.0.3/32"],
+                [
+                    str(WRITER),
+                    "server01",
+                    SECOND_PUBLIC_KEY,
+                    "10.8.0.3/32",
+                    "10.42.20.4/32",
+                ],
                 text=True,
                 capture_output=True,
                 check=False,
@@ -119,6 +142,7 @@ class WireGuardPeerFragmentTests(unittest.TestCase):
                     "server01",
                     NONCANONICAL_PUBLIC_KEY,
                     "10.8.0.3/32",
+                    "10.42.20.4/32",
                 ],
                 text=True,
                 capture_output=True,
@@ -158,7 +182,17 @@ class WireGuardPeerFragmentTests(unittest.TestCase):
             HEIGHLINER.read_text(encoding="utf-8"),
         )
 
-    def test_caladan_and_chapterhouse_use_sequential_peer_names_and_addresses(self) -> None:
+    def test_arrakis_bootstrap_preserves_its_lan_service_identity(self) -> None:
+        arrakis = (REPO / "system/server01/ubuntu/bootstrap.sh").read_text(
+            encoding="utf-8"
+        )
+        fragment_function = arrakis[
+            arrakis.index("write_heighliner_peer_fragment() {") :
+            arrakis.index("\n}\n\nsetup_wormlogic_vpn() {")
+        ]
+        self.assertIn('"10.42.20.4/32"', fragment_function)
+
+    def test_caladan_is_deployed_and_chapterhouse_remains_planned(self) -> None:
         self.assertEqual(EXPECTED_PEERS["server03"][0], "80-caladan.conf")
         self.assertEqual(EXPECTED_PEERS["server04"][0], "90-chapterhouse.conf")
 
@@ -167,7 +201,9 @@ class WireGuardPeerFragmentTests(unittest.TestCase):
         ).read_text(encoding="utf-8")
         self.assertIn('default_vpn_ip="10.8.0.7/32"', chapterhouse)
 
-        self.assertFalse((PEER_DIR / "80-caladan.conf").exists())
+        caladan_peer = (PEER_DIR / "80-caladan.conf").read_text(encoding="utf-8")
+        self.assertIn("# Caladan", caladan_peer)
+        self.assertIn("AllowedIPs = 10.8.0.5/32", caladan_peer)
         self.assertFalse((PEER_DIR / "90-chapterhouse.conf").exists())
 
 
